@@ -1,0 +1,17 @@
+# --- secrets / personal data - never commit -------------------------------
+.env
+.env.*
+!.env.example
+*.har
+
+# Your own shopping lists (generated from your orders) stay local.
+lists/*
+!lists/example.txt
+
+# --- local state: browser profile, saved session (a logged-in key), runs --
+sessions/
+out/
+
+# --- tooling -------------------------------------------------------------
+node_modules/
+scratch*

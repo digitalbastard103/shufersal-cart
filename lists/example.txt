@@ -1,0 +1,12 @@
+# One item per line. Blank lines and lines starting with # are ignored.
+#
+#   חלב 3% x2          search text, quantity 2
+#   2 x במבה            quantity can come first too
+#   P_7290000042011 x3  an exact Shufersal product code - no searching, no guessing
+#
+# Ambiguous lines are NOT added; the run prints candidates with their P_ codes
+# so you can pin the right product here for next time.
+
+חלב 3% x2
+לחם אחיד
+ביצים L 12

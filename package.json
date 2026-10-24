@@ -1,0 +1,37 @@
+{
+  "name": "shufersal-cart",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build and edit a Shufersal online cart from a list, a past order or a saved list - CLI and MCP server. Never checks out or pays.",
+  "license": "MIT",
+  "keywords": ["shufersal", "mcp", "grocery", "cart", "israel"],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "shufersal-mcp": "bin/shufersal-mcp.mjs"
+  },
+  "scripts": {
+    "cart:fill": "node --disable-warning=ExperimentalWarning --import tsx src/cli/fill-cart.ts",
+    "cart": "node --disable-warning=ExperimentalWarning --import tsx src/cli/cart.ts",
+    "history": "node --disable-warning=ExperimentalWarning --import tsx src/cli/history.ts",
+    "slot": "node --disable-warning=ExperimentalWarning --import tsx src/cli/delivery-slot.ts",
+    "login": "node --disable-warning=ExperimentalWarning --import tsx src/cli/session.ts login",
+    "session": "node --disable-warning=ExperimentalWarning --import tsx src/cli/session.ts",
+    "mcp": "node bin/shufersal-mcp.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "playwright-core": "^1.49.0",
+    "tsx": "^4.19.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  }
+}
