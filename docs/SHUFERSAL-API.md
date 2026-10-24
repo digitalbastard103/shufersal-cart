@@ -55,13 +55,23 @@ probe: non-empty array = signed in. Never printed or stored.
 ## Search
 
 ### `GET /search/results?q=<text>:relevance&limit=<n>` — captured
-`:relevance` is the sort suffix, so strip `:` from user text. JSON
-(abridged; values illustrative):
+`:relevance` is the sort suffix, so strip `:` from user text.
+
+**Exact lookup by מקט (verified live):** searching for a product's `sku`
+(the מקט shown on its product page, also the digits of its `P_` code) returns
+exactly that product — e.g. `q=4131074` → only `P_4131074`. Where the מקט is
+the package barcode, the barcode works too; otherwise the barcode is not
+searchable. `ean` was `null` on every product checked. Searching for the
+literal text `P_4131074` does **not** work (it is treated as words).
+
+JSON (abridged; values illustrative):
 
 ```jsonc
 {
   "results": [{
     "code": "P_7296073219347",           // product code used everywhere else
+    "sku": "7296073219347",              // the מקט; searchable exactly
+    "ean": null,
     "name": "לחם אחיד פרוס",
     "brandName": "שופרסל",
     "unitDescription": "…",               // size/pack text, free-form

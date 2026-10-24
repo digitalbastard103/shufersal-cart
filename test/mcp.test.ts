@@ -13,6 +13,7 @@ const config: ShoppingConfig = {
   userDataDir: path.join(os.tmpdir(), 'shufersal-test-profile'),
   transport: 'http',
   cookieFile: path.join(os.tmpdir(), 'shufersal-test-no-such-cookies.json'),
+  choicesFile: path.join(os.tmpdir(), 'shufersal-test-choices.json'),
   headless: true,
   loginTimeoutMs: 1000,
   requestDelayMs: 0,

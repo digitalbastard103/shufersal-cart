@@ -14,6 +14,8 @@ export type ListItem = {
   query: string;
   /** An exact Shufersal product code (`P_...`), when the line pins one. */
   productCode?: string;
+  /** A מקט (as shown on the Shufersal product page) given on its own: looked up exactly, never fuzzy-matched. */
+  sku?: string;
   quantity: number;
   /** Text after " #" on the line, e.g. the product name next to a pinned code. */
   note?: string;
@@ -29,6 +31,8 @@ export const MAX_QUANTITY = 30;
 const TRAILING_QTY = /\s*(?:x|×|\*)\s*(\d+)\s*$/i;
 const LEADING_QTY = /^(\d+)\s*(?:x|×|\*)\s+/i;
 const PRODUCT_CODE = /^P_\d+$/i;
+/** A line that is only a number (4-14 digits) is a מקט. That is the site's own product number - for some products the package barcode, for many a shorter internal number. */
+const SKU = /^\d{4,14}$/;
 
 export function parseList(text: string): ParsedList {
   const items: ListItem[] = [];
@@ -60,6 +64,11 @@ export function parseList(text: string): ParsedList {
     }
     if (rest === '') {
       errors.push({ line, raw, reason: 'no product text' });
+      return;
+    }
+
+    if (SKU.test(rest)) {
+      items.push({ line, raw, query: '', sku: rest, quantity, ...(note ? { note } : {}) });
       return;
     }
 

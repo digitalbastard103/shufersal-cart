@@ -4,7 +4,7 @@ import { decide, normalize, score } from '../src/list/match.js';
 import { parseCartEntries, toCandidate, type Candidate } from '../src/shufersal/types.js';
 
 function c(code: string, name: string, extra: Partial<Candidate> = {}): Candidate {
-  return { code, name, brand: null, unitDescription: null, sellingMethod: 'BY_UNIT', inStock: true, price: 5, priceText: '5.00 ₪', ...extra };
+  return { code, sku: code.slice(2), name, brand: null, unitDescription: null, sellingMethod: 'BY_UNIT', inStock: true, price: 5, priceText: '5.00 ₪', ...extra };
 }
 
 describe('normalize / score', () => {

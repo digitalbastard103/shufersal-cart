@@ -23,6 +23,8 @@ export function normalize(text: string): string {
     .normalize('NFKC')
     .replace(/[֑-ׇ]/g, '') // niqqud / cantillation
     .replace(/["'`׳״]/g, '')
+    // "3 אחוז" and "3%" are the same thing; product names use "%".
+    .replace(/(\d+(?:\.\d+)?)\s*אחוז/g, '$1%')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}%.]+/gu, ' ')
     .trim();

@@ -50,6 +50,7 @@ function config(password: string): ShoppingConfig {
     userDataDir: path.join(dir, 'profile'),
     transport: 'http',
     cookieFile: path.join(dir, 'cookies.json'),
+    choicesFile: path.join(dir, 'choices.json'),
     headless: true,
     loginTimeoutMs: 1000,
     requestDelayMs: 0,

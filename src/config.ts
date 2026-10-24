@@ -43,6 +43,8 @@ export type ShoppingConfig = {
   transport: 'http' | 'browser';
   /** Saved session cookies for HTTP mode - a logged-in key, keep private. */
   cookieFile: string;
+  /** Remembered "this line means this product" choices (personal, gitignored). */
+  choicesFile: string;
   /** Start hidden and only show a window when a login is needed. */
   headless: boolean;
   loginTimeoutMs: number;
@@ -59,6 +61,7 @@ export function loadConfig(): ShoppingConfig {
     password: process.env['SHUFERSAL_PASSWORD'] || undefined, // not trimmed: spaces may be part of it
     transport: optional('SHUFERSAL_TRANSPORT') === 'browser' ? 'browser' : 'http',
     cookieFile: optional('SHUFERSAL_COOKIE_FILE') ?? 'sessions/shufersal-cookies.json',
+    choicesFile: optional('SHUFERSAL_CHOICES_FILE') ?? 'lists/choices.json',
     loginTimeoutMs: int('SHUFERSAL_LOGIN_TIMEOUT_SECONDS', 300) * 1000,
     requestDelayMs: int('SHUFERSAL_REQUEST_DELAY_MS', 1200),
   };

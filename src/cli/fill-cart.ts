@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { describe, fillCart, summarize, type FillResult } from '../cart/fill.js';
 import { loadConfig, loadDotEnv } from '../config.js';
+import { Choices } from '../list/choices.js';
 import { parseList } from '../list/parse-list.js';
 import { ShufersalClient } from '../shufersal/client.js';
 import { connect } from '../shufersal/connect.js';
@@ -53,6 +54,7 @@ async function main(): Promise<number> {
     console.log('');
     result = await fillCart(client, items, {
       dryRun,
+      choices: Choices.load(config.choicesFile),
       delayMs: config.requestDelayMs,
       pause: (ms) => transport.pause(ms),
       onOutcome: (o) => console.log(describe(o)),

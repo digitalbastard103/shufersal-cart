@@ -1,4 +1,5 @@
 import { decide } from '../list/match.js';
+import type { Choices } from '../list/choices.js';
 import type { ListItem } from '../list/parse-list.js';
 import type { ShufersalClient } from '../shufersal/client.js';
 import { BlockedError, SessionError } from '../shufersal/transport.js';
@@ -15,12 +16,14 @@ import type { Candidate } from '../shufersal/types.js';
 
 /** A pinned P_ code has no search result behind it, so only the code is known. */
 export type Product = Candidate | { code: string; name?: undefined };
+/** How a line was turned into a product, when it was not a plain search. */
+export type Via = 'code' | 'sku' | 'remembered';
 /** Resolved and waiting for the bulk add (or, in a dry run, what would be added). */
-export type Queued = { status: 'would-add'; item: ListItem; product: Product };
+export type Queued = { status: 'would-add'; item: ListItem; product: Product; via?: Via };
 
 export type Outcome =
   | Queued
-  | { status: 'added'; item: ListItem; product: Product; cartQty: number }
+  | { status: 'added'; item: ListItem; product: Product; cartQty: number; via?: Via }
   | { status: 'already-in-cart'; item: ListItem; code: string; cartQty: number; name?: string }
   | { status: 'ambiguous' | 'out-of-stock'; item: ListItem; candidates: Candidate[] }
   | { status: 'not-found'; item: ListItem }
@@ -41,6 +44,8 @@ export type FillOptions = {
   /** Pause between search requests, in ms. */
   delayMs: number;
   pause: (ms: number) => Promise<void>;
+  /** Remembered "this line means this product" choices; looked up before searching. */
+  choices?: Choices;
   /** Called as each line is resolved, and again when the bulk add settles it. */
   onOutcome?: (outcome: Outcome) => void;
   /** Called just before the bulk add request. */
@@ -58,7 +63,7 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
     for (const item of items) {
       let outcome: Outcome;
       try {
-        outcome = await resolve(item, client, cart, queued);
+        outcome = await resolve(item, client, cart, queued, options.choices);
       } catch (error) {
         if (error instanceof BlockedError) throw error;
         outcome = { status: 'error', item, message: error instanceof Error ? error.message : String(error) };
@@ -74,7 +79,9 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
       for (const [code, pending] of queued) {
         const cartQty = after.get(code);
         const done: Outcome =
-          cartQty === undefined ? { status: 'unverified', item: pending.item, code } : { status: 'added', item: pending.item, product: pending.product, cartQty };
+          cartQty === undefined
+            ? { status: 'unverified', item: pending.item, code }
+            : { status: 'added', item: pending.item, product: pending.product, cartQty, ...(pending.via ? { via: pending.via } : {}) };
         outcomes[outcomes.indexOf(pending)] = done;
         report(done);
       }
@@ -86,11 +93,33 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
   }
 }
 
-async function resolve(item: ListItem, client: ShufersalClient, cart: Map<string, number>, queued: Map<string, Queued>): Promise<Outcome> {
+async function resolve(
+  item: ListItem,
+  client: ShufersalClient,
+  cart: Map<string, number>,
+  queued: Map<string, Queued>,
+  choices?: Choices,
+): Promise<Outcome> {
   let product: Product;
+  let via: Via | undefined;
+
+  // An explicit מקט, or a product the user chose for this line before: exact
+  // lookup by מקט, with live price and stock - never a fuzzy match.
+  const remembered = item.sku || item.productCode ? undefined : choices?.get(item.query);
+  const sku = item.sku ?? remembered?.sku;
 
   if (item.productCode) {
     product = { code: item.productCode };
+    via = 'code';
+  } else if (sku) {
+    via = item.sku ? 'sku' : 'remembered';
+    const found = await client.findBySku(sku);
+    if (!found) {
+      return { status: 'error', item, message: `no product with מקט ${sku}${remembered ? ` (remembered for "${remembered.query}" - choose again)` : ''}` };
+    }
+    if (!found.inStock) return { status: 'out-of-stock', item, candidates: [found] };
+    if (found.sellingMethod && found.sellingMethod !== 'BY_UNIT') return { status: 'by-weight', item, product: found };
+    product = found;
   } else {
     const decision = decide(item.query, await client.search(item.query));
     if (decision.kind === 'none') return { status: 'not-found', item };
@@ -114,7 +143,7 @@ async function resolve(item: ListItem, client: ShufersalClient, cart: Map<string
   const earlier = queued.get(product.code);
   if (earlier) return { status: 'duplicate', item, code: product.code, line: earlier.item.line };
 
-  const outcome = { status: 'would-add' as const, item, product };
+  const outcome: Queued = { status: 'would-add', item, product, ...(via ? { via } : {}) };
   queued.set(product.code, outcome);
   return outcome;
 }
@@ -130,13 +159,17 @@ export function describe(o: Outcome): string {
   const what = (p: Product) => ('priceText' in p ? label(p) : `[${p.code}]`);
   switch (o.status) {
     case 'added':
-      return `  ✓ ${head}  ->  ${what(o.product)}  (in cart: ${o.cartQty})`;
+      return `  ✓ ${head}  ->  ${what(o.product)}  (in cart: ${o.cartQty})${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'would-add':
-      return `  ~ ${head}  ->  ${what(o.product)}  x${o.item.quantity}`;
+      return `  ~ ${head}  ->  ${what(o.product)}  x${o.item.quantity}${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'already-in-cart':
       return `  = ${head}  ->  already in cart (${o.cartQty})  [${o.code}]`;
     case 'ambiguous':
-      return `  ? ${head}  ->  ambiguous, not added. Pin one with its code:\n` + o.candidates.map((c) => `        ${label(c)}`).join('\n');
+      return (
+        `  ? ${head}  ->  ambiguous, not added. Choose one (remembered for next time):\n` +
+        o.candidates.map((c) => `        ${label(c)}`).join('\n') +
+        `\n        npm run choose -- "${o.item.query}" ${o.candidates[0]?.code ?? 'P_…'}`
+      );
     case 'out-of-stock':
       return `  ✗ ${head}  ->  only out-of-stock matches:\n` + o.candidates.map((c) => `        ${label(c)}`).join('\n');
     case 'not-found':

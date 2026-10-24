@@ -43,6 +43,16 @@ export class ShufersalClient {
     return body.results.map(toCandidate).filter((c): c is Candidate => c !== null);
   }
 
+  /**
+   * Exact lookup by מקט: searching for the number returns that product (verified
+   * live). Only a result whose sku is exactly the number counts - never a
+   * "close" match.
+   */
+  async findBySku(sku: string): Promise<Candidate | null> {
+    if (!/^\d{4,14}$/.test(sku)) throw new SessionError(`Not a מקט: ${sku}`);
+    return (await this.search(sku, 5)).find((c) => c.sku === sku) ?? null;
+  }
+
   /** Every line in the cart with name, quantity, selling method and line price. */
   async cartLines(): Promise<CartLine[]> {
     const response = await this.session.request('GET', ENDPOINTS.cartLoad);

@@ -8,7 +8,8 @@ import { MAX_QUANTITY, parseList, type ListItem } from '../list/parse-list.js';
 import { ShufersalClient } from '../shufersal/client.js';
 import { connect, hasCredentials, login } from '../shufersal/connect.js';
 import { NotSignedInError, SessionError, type Transport } from '../shufersal/transport.js';
-import { normalizeStart, type SourceItem } from '../shufersal/types.js';
+import { normalizeStart, skuOf, type SourceItem } from '../shufersal/types.js';
+import { Choices } from '../list/choices.js';
 
 /**
  * MCP server: lets an AI assistant build and edit the user's Shufersal cart.
@@ -30,7 +31,9 @@ choose_delivery_slot -> report the total.
 
 Rules:
 - Ambiguous list lines are never guessed. Show the user the candidates and ask
-  which product they want, then add it by its P_ code.
+  which product they want, then add it by its P_ code with add_to_cart, passing
+  remember_as = the original line, so the same line resolves to that product
+  automatically next time (or call remember_choice).
 - Items sold by weight or package are not added automatically; tell the user to
   add those in the app.
 - Before adding a whole past order or saved list, use dry_run and confirm with
@@ -112,7 +115,13 @@ function outcomeJson(o: Outcome) {
   switch (o.status) {
     case 'added':
     case 'would-add':
-      return { ...base, code: o.product.code, name: o.product.name ?? o.item.note, ...(o.status === 'added' ? { cartQuantity: o.cartQty } : {}) };
+      return {
+        ...base,
+        code: o.product.code,
+        name: o.product.name ?? o.item.note,
+        ...(o.status === 'added' ? { cartQuantity: o.cartQty } : {}),
+        ...(o.via === 'remembered' ? { resolvedBy: "the user's earlier choice for this line" } : o.via === 'sku' ? { resolvedBy: 'exact מקט' } : {}),
+      };
     case 'already-in-cart':
       return { ...base, code: o.code, cartQuantity: o.cartQty, note: 'left as is; use set_quantity to change it' };
     case 'ambiguous':
@@ -170,8 +179,18 @@ function cartView(client: ShufersalClient) {
 export function createServer(shop: Shop): McpServer {
   const server = new McpServer({ name: 'shufersal-cart', version: '0.1.0' }, { instructions: INSTRUCTIONS });
   const { config } = shop;
+  // Reloaded per call so choices made from the CLI meanwhile are picked up.
+  const choices = () => Choices.load(config.choicesFile);
   const fill = (client: ShufersalClient, session: Transport, items: ListItem[], dry: boolean) =>
-    fillCart(client, items, { dryRun: dry, delayMs: config.requestDelayMs, pause: (ms) => session.pause(ms) });
+    fillCart(client, items, { dryRun: dry, choices: choices(), delayMs: config.requestDelayMs, pause: (ms) => session.pause(ms) });
+
+  /** Verifies the product live (exact מקט lookup) before remembering it. */
+  const remember = async (client: ShufersalClient, line: string, code: string) => {
+    const sku = skuOf(code);
+    const found = sku ? await client.findBySku(sku) : null;
+    if (!sku || !found) throw new SessionError(`No product ${code} to remember.`);
+    return choices().set(line, { code: found.code, sku, name: found.name });
+  };
 
   server.registerTool(
     'status',
@@ -246,9 +265,21 @@ export function createServer(shop: Shop): McpServer {
     'add_to_cart',
     {
       title: 'Add products by code',
-      description: 'Add specific products (P_ codes, e.g. from search_products) in one request. Products already in the cart are left as they are.',
+      description:
+        'Add specific products (P_ codes, e.g. from search_products or an ambiguous line\'s candidates) in one request. ' +
+        'Products already in the cart are left as they are. When the user picked the product for a list line, set remember_as ' +
+        'to that line so it resolves to this product automatically next time.',
       inputSchema: {
-        items: z.array(z.object({ code: productCode, quantity: quantity.default(1) })).min(1).max(100),
+        items: z
+          .array(
+            z.object({
+              code: productCode,
+              quantity: quantity.default(1),
+              remember_as: z.string().min(1).optional().describe('The list line the user chose this product for, e.g. "חלב 3%"'),
+            }),
+          )
+          .min(1)
+          .max(100),
         dry_run: dryRun,
       },
     },
@@ -256,9 +287,45 @@ export function createServer(shop: Shop): McpServer {
       respond(() =>
         shop.run(async (client, session) => {
           const list: ListItem[] = items.map((it, i) => ({ line: i + 1, raw: it.code, query: '', productCode: it.code, quantity: it.quantity }));
-          return fillJson(await fill(client, session, list, dry_run), list.length);
+          const result = fillJson(await fill(client, session, list, dry_run), list.length);
+          const remembered = [];
+          if (!dry_run) for (const it of items) if (it.remember_as) remembered.push(await remember(client, it.remember_as, it.code));
+          return remembered.length ? { ...result, remembered } : result;
         }),
       ),
+  );
+
+  server.registerTool(
+    'remember_choice',
+    {
+      title: 'Remember a product choice',
+      description:
+        'Remember that a list line means a specific product (e.g. "חלב 3%" -> P_4131074). Next time that line appears, it is looked up ' +
+        'exactly by the product\'s מקט instead of searched. Lines match regardless of word order; "3 אחוז" counts as "3%".',
+      inputSchema: { line: z.string().min(1), code: productCode },
+    },
+    ({ line, code }) => respond(() => shop.run((client) => remember(client, line, code))),
+  );
+
+  server.registerTool(
+    'list_choices',
+    {
+      title: 'Remembered product choices',
+      description: 'All remembered "this line means this product" choices.',
+      annotations: { readOnlyHint: true },
+    },
+    () => respond(async () => choices().all()),
+  );
+
+  server.registerTool(
+    'forget_choice',
+    {
+      title: 'Forget a product choice',
+      description: 'Forget the remembered product for a list line, so it is searched again next time.',
+      inputSchema: { line: z.string().min(1) },
+      annotations: { idempotentHint: true },
+    },
+    ({ line }) => respond(async () => ({ forgotten: choices().remove(line) })),
   );
 
   server.registerTool(

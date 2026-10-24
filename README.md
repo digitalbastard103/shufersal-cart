@@ -20,6 +20,7 @@ Shufersal app or website yourself.
 | Log in (stored password, or a browser window) | `npm run login` | `login` |
 | Search products | — | `search_products` |
 | Fill the cart from a text list | `npm run cart:fill -- list.txt` | `fill_cart_from_list` |
+| Remember "this line means this product" | `npm run choose -- "חלב 3%" P_4131074` | `remember_choice`, `list_choices`, `forget_choice` (or `add_to_cart` with `remember_as`) |
 | Add exact products by code | (pin `P_` codes in a list) | `add_to_cart` |
 | Start from a past order / saved list | `npm run history` | `add_order_to_cart`, `add_saved_list_to_cart` |
 | See the cart, line prices, total to pay | `npm run cart` | `view_cart` |
@@ -141,13 +142,33 @@ see `docs/DEPLOYMENT.md`.
 ```
 # comments and blank lines are ignored
 חלב 3% x2            quantity via x2 / ×2 / *2, or a leading "2 x"
-ביצים L 12           a bare number stays part of the product name
+ביצים L 12           a number inside a line stays part of the product name
+4131074 x2           a line that is only a number is a מקט: exact lookup
 P_7290000042011 x3   exact product code: no search, no guessing
 P_4131074   # note   text after " #" is a note (shown in output)
 ```
 
-Once you have chosen a product from the candidates, pin its `P_` code in your
-list — that makes recurring items fully automatic.
+### Remembered choices
+
+When a line is ambiguous, choose once and it is remembered:
+
+```bash
+npm run choose -- "חלב 3%" P_4131074      # or the מקט: 4131074
+npm run choose -- --list
+npm run choose -- --forget "חלב 3%"
+```
+
+From then on that line is looked up **exactly by the product's מקט** — with
+live price and stock — instead of being searched. Lines match regardless of
+word order, and "3 אחוז" counts as "3%" (so "חלב 3 אחוז" finds the same
+choice). A remembered product that is out of stock is reported, never swapped
+for something else. Choices live in `lists/choices.json` (personal, gitignored).
+Over MCP the assistant does this for you: when you pick a candidate, it adds
+it with `remember_as` (or calls `remember_choice`).
+
+The מקט is the number shown on the Shufersal product page (the site's `sku`).
+For some products it is the package barcode; for many it is a shorter internal
+number, and the package barcode will not find them.
 
 ## Configuration (`.env`)
 

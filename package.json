@@ -15,7 +15,8 @@
   "scripts": {
     "cart:fill": "node --disable-warning=ExperimentalWarning --import tsx src/cli/fill-cart.ts",
     "cart": "node --disable-warning=ExperimentalWarning --import tsx src/cli/cart.ts",
-    "history": "node --disable-warning=ExperimentalWarning --import tsx src/cli/history.ts",
+    "choose": "node --disable-warning=ExperimentalWarning --import tsx src/cli/choose.ts",
+    "history":"node --disable-warning=ExperimentalWarning --import tsx src/cli/history.ts",
     "slot": "node --disable-warning=ExperimentalWarning --import tsx src/cli/delivery-slot.ts",
     "login": "node --disable-warning=ExperimentalWarning --import tsx src/cli/session.ts login",
     "session": "node --disable-warning=ExperimentalWarning --import tsx src/cli/session.ts",

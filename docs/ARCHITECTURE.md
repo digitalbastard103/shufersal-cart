@@ -9,6 +9,7 @@ src/
   list/
     parse-list.ts         text list -> ListItem[]   (quantities, pinned P_ codes, notes)
     match.ts              search results -> one confident pick | ambiguous | none
+    choices.ts            remembered "this line means this product" (by מקט)
   cart/
     fill.ts               ListItem[] -> cart: resolve each line, one bulk add, verify
   shufersal/
@@ -76,6 +77,10 @@ connect():
 1. Read the cart once (product code -> quantity).
 2. For each list line:
    - pinned `P_` code -> that product
+   - a bare number (מקט), or a line with a remembered choice
+     (`list/choices.ts`, keyed by the line's sorted words) -> exact lookup by
+     מקט (`client.findBySku`): only a result whose `sku` equals it counts;
+     out of stock is reported, never swapped
    - otherwise search, then `match.decide`: auto-pick only if exactly one
      in-stock result contains every word of the line, or exactly one is named
      exactly that; otherwise `ambiguous` with up to 4 candidates.

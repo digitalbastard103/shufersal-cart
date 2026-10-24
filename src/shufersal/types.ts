@@ -217,6 +217,8 @@ export function parseSlots(body: unknown): Slot[] {
 
 export type RawSearchResult = {
   code?: string;
+  /** The product's מקט - the digits of its P_ code (`ean` was always null when checked). */
+  sku?: string | null;
   name?: string;
   brandName?: string | null;
   unitDescription?: string | null;
@@ -232,6 +234,8 @@ export type RawSearchResponse = {
 
 export type Candidate = {
   code: string;
+  /** מקט. Searching for it returns exactly this product (verified live). */
+  sku: string | null;
   name: string;
   brand: string | null;
   unitDescription: string | null;
@@ -242,11 +246,17 @@ export type Candidate = {
   priceText: string | null;
 };
 
+/** "P_4131074" -> "4131074". Some variant codes carry a suffix ("P_7296073409458_40"); the מקט is the first number. */
+export function skuOf(code: string): string | null {
+  return /^P_(\d+)/i.exec(code)?.[1] ?? null;
+}
+
 export function toCandidate(raw: RawSearchResult): Candidate | null {
   if (!raw.code || !raw.name) return null;
   const stock = raw.stock?.stockLevelStatus?.code ?? null;
   return {
     code: raw.code,
+    sku: raw.sku?.trim() || skuOf(raw.code),
     name: raw.name.trim(),
     brand: raw.brandName?.trim() || null,
     unitDescription: raw.unitDescription?.trim() || null,
