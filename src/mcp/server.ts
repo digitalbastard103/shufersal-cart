@@ -344,7 +344,8 @@ export function createServer(shop: Shop): McpServer {
         'Add a shopping list, one item per line: "חלב 3% x2", "2 x במבה", or a pinned code "P_4131074 x2". ' +
         'Each line is added only if exactly one in-stock product matches; ambiguous lines come back with candidates for the user to choose from. ' +
         'Pinned codes are checked to exist, be in stock and be sold by unit. Repeated products add up. Quantities are whole numbers from 1 to 30; ' +
-        'a malformed one is reported as a skipped line. counts covers every line, and complete is true only when all of them went through.',
+        'a malformed one is reported in skippedLines and counted as invalid. counts covers every line, and complete is true only when all of them went through; ' +
+        'invalid counts malformed list lines, skipped counts lines left out of a past order or saved list (in notAdded), and needsAttention includes both.',
       inputSchema: { list: z.string().min(1).describe('One item per line. Lines starting with # are ignored.'), dry_run: dryRun },
     },
     ({ list, dry_run }) =>
