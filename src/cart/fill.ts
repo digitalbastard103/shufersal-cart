@@ -1,6 +1,6 @@
 import { decide } from '../list/match.js';
 import type { Choices } from '../list/choices.js';
-import type { ListItem } from '../list/parse-list.js';
+import { MAX_QUANTITY, type ListItem } from '../list/parse-list.js';
 import type { ShufersalClient } from '../shufersal/client.js';
 import { BlockedError, SessionError } from '../shufersal/transport.js';
 import type { Candidate } from '../shufersal/types.js';
@@ -29,7 +29,7 @@ export type Outcome =
   | { status: 'not-found'; item: ListItem }
   | { status: 'by-weight'; item: ListItem; product: Candidate }
   | { status: 'unverified'; item: ListItem; code: string }
-  | { status: 'duplicate'; item: ListItem; code: string; line: number }
+  | { status: 'merged'; item: ListItem; code: string; line: number; total: number }
   | { status: 'error'; item: ListItem; message: string };
 
 export type FillResult = {
@@ -70,7 +70,7 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
       }
       outcomes.push(outcome);
       report(outcome);
-      if (!item.productCode) await options.pause(options.delayMs);
+      await options.pause(options.delayMs);
     }
 
     if (!options.dryRun && queued.size > 0) {
@@ -109,7 +109,15 @@ async function resolve(
   const sku = item.sku ?? remembered?.sku;
 
   if (item.productCode) {
-    product = { code: item.productCode };
+    // A pinned code gets the same checks as any other line: it must exist, be
+    // in stock and be sold by unit. Products already in the cart need no lookup.
+    const inCart = cart.get(item.productCode);
+    if (inCart !== undefined) return { status: 'already-in-cart', item, code: item.productCode, cartQty: inCart, name: item.note };
+    const found = await client.findByCode(item.productCode);
+    if (!found) return { status: 'not-found', item };
+    if (!found.inStock) return { status: 'out-of-stock', item, candidates: [found] };
+    if (found.sellingMethod && found.sellingMethod !== 'BY_UNIT') return { status: 'by-weight', item, product: found };
+    product = found;
     via = 'code';
   } else if (sku) {
     via = item.sku ? 'sku' : 'remembered';
@@ -140,8 +148,16 @@ async function resolve(
     return { status: 'already-in-cart', item, code: product.code, cartQty: existing, name: product.name };
   }
 
+  // The same product on several lines: the quantities add up, like a shopping list.
   const earlier = queued.get(product.code);
-  if (earlier) return { status: 'duplicate', item, code: product.code, line: earlier.item.line };
+  if (earlier) {
+    const total = earlier.item.quantity + item.quantity;
+    if (total > MAX_QUANTITY) {
+      return { status: 'error', item, message: `together with line ${earlier.item.line} this is ${total} units, more than ${MAX_QUANTITY}` };
+    }
+    earlier.item = { ...earlier.item, quantity: total };
+    return { status: 'merged', item, code: product.code, line: earlier.item.line, total };
+  }
 
   const outcome: Queued = { status: 'would-add', item, product, ...(via ? { via } : {}) };
   queued.set(product.code, outcome);
@@ -178,19 +194,39 @@ export function describe(o: Outcome): string {
       return `  ⚖ ${head}  ->  ${label(o.product)} is sold by weight - add it by hand`;
     case 'unverified':
       return `  ! ${head}  ->  add request sent for ${o.code}, but it does not appear in the returned cart - check it`;
-    case 'duplicate':
-      return `  ! ${head}  ->  same product as line ${o.line} [${o.code}] - only the first line is used`;
+    case 'merged':
+      return `  + ${head}  ->  same product as line ${o.line} [${o.code}] - added to it (x${o.total} in total)`;
     case 'error':
       return `  ! ${head}  ->  error: ${o.message}`;
   }
 }
 
-export function summarize(result: FillResult, total: number): string {
+/** Lines left out before filling: from an order or list (`skipped`), or unparseable list lines (`invalid`). */
+export type Tally = { skipped?: number; invalid?: number };
+
+/** Counts over every requested line, including those that never reached the cart. */
+export function counts(result: FillResult, lines: number, { skipped = 0, invalid = 0 }: Tally = {}) {
   const count = (s: Outcome['status']) => result.outcomes.filter((o) => o.status === s).length;
-  const needsYou =
-    count('ambiguous') + count('out-of-stock') + count('not-found') + count('by-weight') + count('unverified') + count('duplicate') + count('error');
-  const head = result.dryRun ? `Would add ${count('would-add')} of ${total}.` : `Added ${count('added')} of ${total}.`;
-  return [result.stoppedEarly ? `STOPPED EARLY: ${result.stoppedEarly}` : null, `${head} Already in cart: ${count('already-in-cart')}. Needs you: ${needsYou}.`]
+  const needsAttention =
+    count('ambiguous') + count('out-of-stock') + count('not-found') + count('by-weight') + count('unverified') + count('error') + skipped + invalid;
+  return {
+    requestedLines: lines + skipped + invalid,
+    ...(result.dryRun ? { wouldAdd: count('would-add') } : { added: count('added') }),
+    alreadyInCart: count('already-in-cart'),
+    merged: count('merged'),
+    needsAttention,
+    skipped,
+    invalid,
+    complete: needsAttention === 0 && !result.stoppedEarly,
+  };
+}
+
+export function summarize(result: FillResult, total: number, tally: Tally = {}): string {
+  const c = counts(result, total, tally);
+  const done = result.outcomes.filter((o) => o.status === (result.dryRun ? 'would-add' : 'added')).length;
+  const head = result.dryRun ? `Would add ${done} of ${c.requestedLines}.` : `Added ${done} of ${c.requestedLines}.`;
+  const merged = c.merged ? ` Merged duplicates: ${c.merged}.` : '';
+  return [result.stoppedEarly ? `STOPPED EARLY: ${result.stoppedEarly}` : null, `${head} Already in cart: ${c.alreadyInCart}.${merged} Needs you: ${c.needsAttention}.`]
     .filter(Boolean)
     .join('\n');
 }
