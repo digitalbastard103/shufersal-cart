@@ -76,7 +76,9 @@ connect():
 
 1. Read the cart once (product code -> quantity).
 2. For each list line:
-   - pinned `P_` code -> that product
+   - pinned `P_` code (variants such as `P_7296073409441_42` included) -> exact
+     lookup by code (`client.findByCode`), with the same stock and
+     selling-method checks as any other line; an unknown code is `not-found`
    - a bare number (מקט), or a line with a remembered choice
      (`list/choices.ts`, keyed by the line's sorted words) -> exact lookup by
      מקט (`client.findBySku`): only a result whose `sku` equals it counts;
@@ -85,9 +87,24 @@ connect():
      in-stock result contains every word of the line, or exactly one is named
      exactly that; otherwise `ambiguous` with up to 4 candidates.
    - already in the cart -> `already-in-cart` (never doubled)
-   - the same product twice in one list -> `duplicate`
-   - sold by weight/package -> `by-weight` (not automated)
-3. One bulk add (`cart/addGrid`) for everything resolved.
+   - the same product twice in one list -> `merged`: the quantities add up,
+     and the first line reports the sum as `totalQuantity`; each line keeps
+     its own quantity. If the sum exceeds the 30-unit limit, every line of
+     that product is an `error` and none of it is added.
+   - sold by weight (`BY_WEIGHT`) -> needs a weight in kg in the product's
+     `weightIncrement` steps (500 g seen live) up to `maxOrderWeight`; without
+     one the line is `by-weight`. Packaged produce (`BY_PACKAGE`) takes whole
+     packs, and a unit product refuses a weight.
+   - a malformed multiplier (`x1.5`, `x-2`, `xabc` after a code) is a parse
+     error, never part of a search
+3. One bulk add (`cart/addGrid`) for units and packs, each with its selling
+   method, then one `cart/add` per weighed product (`sellingMethod: BY_WEIGHT`,
+   `qty` in kg). Verified live: `addGrid` drops a fractional weight, reads 1500
+   as kg (capped at 100), and one bad weighed line fails the whole bulk, so
+   weights never go through it. `counts` and the
+   summary cover every requested line, including lines skipped from an order
+   or saved list and lines that did not parse; `complete` is true only when
+   every line went through.
 4. Each product is confirmed against the cart HTML that request returns;
    anything missing is `unverified`, never reported as added.
 
@@ -120,3 +137,8 @@ connect():
 4. Add a `client.ts` method that enforces the operation's invariants.
 5. Expose it in `cli/` and/or `mcp/server.ts`.
 6. Verify once against a real account, read-only or reversible first.
+
+Order and saved-list quantities are units for `BY_UNIT` products and grams for
+weighed or packaged ones (bananas come back as `1000`). `get_order` and
+`get_saved_list` say which with `unit: "unit" | "g"`, and lines skipped from a
+reorder carry their quantity and unit.

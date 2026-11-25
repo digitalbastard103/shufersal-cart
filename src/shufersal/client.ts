@@ -1,27 +1,6 @@
 import { MAX_QUANTITY } from '../list/parse-list.js';
 import { FormBody, SessionError, type Transport } from './transport.js';
-import {
-  ENDPOINTS,
-  parseCartEntries,
-  parseCartLines,
-  parseCartSummary,
-  type CartLine,
-  type CartSummary,
-  parseOrderItems,
-  parseOrders,
-  parseSavedListItems,
-  parseSavedLists,
-  parseSlots,
-  toCandidate,
-  toSlot,
-  type Candidate,
-  type OrderSummary,
-  type RawSearchResponse,
-  type RawSlot,
-  type SavedListSummary,
-  type Slot,
-  type SourceItem,
-} from './types.js';
+import { ENDPOINTS, parseCartEntries, parseCartLines, parseCartSummary, type CartLine, type CartSummary, parseOrderItems, parseOrders, parseSavedListItems, parseSavedLists, parseSlots, toCandidate, toSlot, type Candidate, type OrderSummary, type RawSearchResponse, type RawSlot, type SavedListSummary, type Slot, type SourceItem, skuOf } from './types.js';
 
 /**
  * Search, read the cart, add to the cart, and choose a delivery window.
@@ -53,6 +32,18 @@ export class ShufersalClient {
     return (await this.search(sku, 5)).find((c) => c.sku === sku) ?? null;
   }
 
+  /**
+   * Exact lookup by product code, including variant codes such as
+   * P_7296073409441_42: searching for the code's מקט returns the product and
+   * its variants, and only the one whose code matches counts.
+   */
+  async findByCode(code: string): Promise<Candidate | null> {
+    const sku = skuOf(code);
+    if (!sku) throw new SessionError(`Not a product code: ${code}`);
+    const wanted = code.toUpperCase();
+    return (await this.search(sku, 20)).find((c) => c.code.toUpperCase() === wanted) ?? null;
+  }
+
   /** Every line in the cart with name, quantity, selling method and line price. */
   async cartLines(): Promise<CartLine[]> {
     const response = await this.session.request('GET', ENDPOINTS.cartLoad);
@@ -79,7 +70,10 @@ export class ShufersalClient {
     const line = (await this.cartLines()).find((l) => l.code === code);
     if (!line) throw new SessionError(`${code} is not in the cart.`);
     const remove = qty === 0;
-    if (!remove && line.sellingMethod !== 'BY_UNIT') {
+    // A pack line counts whole packs (verified live: cart/update with BY_PACKAGE took tomatoes from 1 to 2 packs);
+    // a line holding grams is a weighed pack whose amount is changed in the app.
+    const countsPacks = line.sellingMethod === 'BY_PACKAGE' && Number.isInteger(line.quantity) && line.quantity <= MAX_QUANTITY;
+    if (!remove && line.sellingMethod !== 'BY_UNIT' && !countsPacks) {
       throw new SessionError(`${line.name} is sold ${line.sellingMethod ?? 'by weight'} - change its amount in the app; only removing it is supported here.`);
     }
 
@@ -87,7 +81,7 @@ export class ShufersalClient {
     const query = new URLSearchParams();
     query.set('entryNumber', String(line.entryNumber));
     query.set('qty', String(qty));
-    query.set('sellingMethod', remove ? '' : 'BY_UNIT');
+    query.set('sellingMethod', remove ? '' : countsPacks ? 'BY_PACKAGE' : 'BY_UNIT');
     if (!remove) query.set('comment', '');
     query.set('cartContext[openFrom]', 'CART');
     query.set('cartContext[recommendationType]', 'REGULAR');
@@ -116,14 +110,33 @@ export class ShufersalClient {
    * "add all to cart". Returns the cart quantities from the returned cart, so
    * each item can be checked individually.
    */
-  async addBulk(items: Array<{ code: string; qty: number }>): Promise<Map<string, number>> {
-    const response = await this.session.request(
-      'POST',
-      ENDPOINTS.cartAddBulk,
-      items.map((i) => ({ productCode: i.code, frontQuantity: i.qty, quantity: i.qty, sellingMethod: 'BY_UNIT', comment: '', longTail: false })),
-    );
-    if (response.status !== 200) throw new SessionError(`cart/addGrid returned HTTP ${response.status}`);
-    return parseCartEntries(response.text);
+  /**
+   * Adds products and returns the cart that results (code -> quantity, kg for
+   * weighed lines). Units and packs go in one bulk request with their selling
+   * method. Weights go one by one through the single add, which is the only
+   * request that accepts them: verified live, the bulk add drops a fractional
+   * weight and reads 1500 as kg, and one bad weighed line fails the whole bulk.
+   */
+  async addBulk(items: Array<{ code: string; qty: number; sellingMethod?: string }>): Promise<Map<string, number>> {
+    const bulk = items.filter((i) => i.sellingMethod !== 'BY_WEIGHT');
+    const weighed = items.filter((i) => i.sellingMethod === 'BY_WEIGHT');
+    let cart: Map<string, number> | null = null;
+    if (bulk.length) {
+      const response = await this.session.request(
+        'POST',
+        ENDPOINTS.cartAddBulk,
+        bulk.map((i) => ({ productCode: i.code, frontQuantity: i.qty, quantity: i.qty, sellingMethod: i.sellingMethod ?? 'BY_UNIT', comment: '', longTail: false })),
+      );
+      if (response.status !== 200) throw new SessionError(`cart/addGrid returned HTTP ${response.status}`);
+      cart = parseCartEntries(response.text);
+    }
+    for (const i of weighed) {
+      const response = await this.session.request('POST', ENDPOINTS.cartAdd, {
+        productCodePost: i.code, productCode: i.code, sellingMethod: 'BY_WEIGHT', qty: i.qty, frontQuantity: i.qty, comment: '', affiliateCode: '',
+      });
+      if (response.status !== 200) throw new SessionError(`cart/add returned HTTP ${response.status} for ${i.code}`);
+    }
+    return weighed.length || !cart ? this.cart() : cart;
   }
 
   async orders(): Promise<OrderSummary[]> {

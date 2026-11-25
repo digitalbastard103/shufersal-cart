@@ -95,6 +95,13 @@ describe('setQuantity', () => {
     await expect(client.setQuantity('P_W', 0)).resolves.toEqual([]);
   });
 
+  it('changes the number of packs of a pack line, with its own selling method', async () => {
+    const site = new FakeSite([{ code: 'P_T', qty: 1, name: 'tomatoes', method: 'by_package' }]);
+    const after = await new ShufersalClient(site).setQuantity('P_T', 2);
+    expect(after.map((l) => [l.code, l.quantity, l.sellingMethod])).toEqual([['P_T', 2, 'BY_PACKAGE']]);
+    expect(site.posts[0]!.path).toContain('qty=2&sellingMethod=BY_PACKAGE&');
+  });
+
   it('reports a change the site did not apply instead of claiming success', async () => {
     const client = new ShufersalClient(new FakeSite([{ code: 'P_A', qty: 1, name: 'a' }], true));
     await expect(client.setQuantity('P_A', 4)).rejects.toThrow(/did not apply/);

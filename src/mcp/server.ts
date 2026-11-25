@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { fillCart, summarize, type FillResult, type Outcome } from '../cart/fill.js';
+import { counts, fillCart, summarize, type FillResult, type Outcome, type Tally } from '../cart/fill.js';
 import { loadConfig, loadDotEnv, type ShoppingConfig } from '../config.js';
 import { MAX_QUANTITY, parseList, type ListItem } from '../list/parse-list.js';
 import { ShufersalClient } from '../shufersal/client.js';
@@ -34,14 +34,14 @@ Rules:
   which product they want, then add it by its P_ code with add_to_cart, passing
   remember_as = the original line, so the same line resolves to that product
   automatically next time (or call remember_choice).
-- Items sold by weight or package are not added automatically; tell the user to
-  add those in the app.
+- Items sold by weight are added by a weight in kg (weight_kg in add_to_cart, "בננה 1.5 ק\"ג" in a list),
+  in the product's steps (0.5 kg); ask the user how much if they did not say. Packaged produce is added in whole packs.
 - Before adding a whole past order or saved list, use dry_run and confirm with
   the user. Never choose a delivery window the user did not ask for.
 - Totals are Shufersal's own figures. Product names are Hebrew; search in Hebrew.
 `.trim();
 
-const productCode = z.string().regex(/^P_\d+$/i, 'a Shufersal product code like P_4131074').transform((s) => s.toUpperCase());
+const productCode = z.string().regex(/^P_\d+(?:_\d+)?$/i, 'a Shufersal product code like P_4131074 or P_7296073409441_42').transform((s) => s.toUpperCase());
 const quantity = z.number().int().min(1).max(MAX_QUANTITY);
 const dryRun = z.boolean().default(false).describe('Only report what would be added; change nothing.');
 
@@ -119,6 +119,8 @@ function outcomeJson(o: Outcome) {
         ...base,
         code: o.product.code,
         name: o.product.name ?? o.item.note,
+        ...(o.sellingMethod === 'BY_WEIGHT' ? { weightKg: o.total, sellingMethod: 'BY_WEIGHT' } : o.sellingMethod === 'BY_PACKAGE' ? { sellingMethod: 'BY_PACKAGE' } : {}),
+        ...(o.sellingMethod !== 'BY_WEIGHT' && o.total !== o.item.quantity ? { totalQuantity: o.total } : {}),
         ...(o.status === 'added' ? { cartQuantity: o.cartQty } : {}),
         ...(o.via === 'remembered' ? { resolvedBy: "the user's earlier choice for this line" } : o.via === 'sku' ? { resolvedBy: 'exact מקט' } : {}),
       };
@@ -128,11 +130,11 @@ function outcomeJson(o: Outcome) {
     case 'out-of-stock':
       return { ...base, candidates: o.candidates.map((c) => ({ code: c.code, name: c.name, brand: c.brand, price: c.priceText, inStock: c.inStock })) };
     case 'by-weight':
-      return { ...base, code: o.product.code, name: o.product.name, note: 'sold by weight - the user adds it in the app' };
+      return { ...base, code: o.product.code, name: o.product.name, note: 'sold by weight: give a weight in kg (weight_kg, or "1.5 ק\"ג" in a list), in steps of ' + (o.product.weightStepKg ?? 0.5) + ' kg' };
     case 'unverified':
       return { ...base, code: o.code, note: 'add request sent but the product is not in the returned cart - check view_cart' };
-    case 'duplicate':
-      return { ...base, code: o.code, note: `same product as line ${o.line}; only the first is used` };
+    case 'merged':
+      return { ...base, code: o.code, note: `same product as line ${o.line}; added to it (${o.total} in total)` };
     case 'not-found':
       return base;
     case 'error':
@@ -140,9 +142,10 @@ function outcomeJson(o: Outcome) {
   }
 }
 
-function fillJson(result: FillResult, total: number, extra: Record<string, unknown> = {}) {
+function fillJson(result: FillResult, total: number, extra: Record<string, unknown> = {}, tally: Tally = {}) {
   return {
-    summary: summarize(result, total),
+    summary: summarize(result, total, tally),
+    counts: counts(result, total, tally),
     dryRun: result.dryRun,
     ...extra,
     lines: result.outcomes.map(outcomeJson),
@@ -151,13 +154,23 @@ function fillJson(result: FillResult, total: number, extra: Record<string, unkno
 }
 
 /** Past order / saved list items -> pinned list items; the rest is reported, not added. */
+/** Order and saved-list quantities are units for BY_UNIT products and grams for weighed or packaged ones (bananas: 1000). */
+function unitOf(item: SourceItem): 'unit' | 'g' {
+  return item.sellingMethod && item.sellingMethod !== 'BY_UNIT' ? 'g' : 'unit';
+}
+
 function itemsToList(items: SourceItem[]) {
   const list: ListItem[] = [];
-  const skipped: Array<{ code: string; name: string; reason: string }> = [];
+  const skipped: Array<{ code: string; name: string; quantity: number; unit: 'unit' | 'g'; reason: string }> = [];
   items.forEach((item, i) => {
-    if (item.sellingMethod && item.sellingMethod !== 'BY_UNIT') skipped.push({ code: item.code, name: item.name, reason: 'sold by weight/package - add in the app' });
-    else if (item.outOfStock) skipped.push({ code: item.code, name: item.name, reason: 'out of stock' });
-    else list.push({ line: i + 1, raw: item.code, query: '', productCode: item.code, quantity: Math.min(MAX_QUANTITY, Math.max(1, Math.round(item.quantity))), note: item.name });
+    const base = { line: i + 1, raw: item.code, query: '', productCode: item.code, note: item.name };
+    if (item.outOfStock) skipped.push({ code: item.code, name: item.name, quantity: item.quantity, unit: unitOf(item), reason: 'out of stock' });
+    // Weighed lines come back in grams: reorder the same weight, rounded to the site's 0.5 kg steps.
+    else if (item.sellingMethod === 'BY_WEIGHT') list.push({ ...base, quantity: 1, weightKg: Math.min(100, Math.max(0.5, Math.round(item.quantity / 500) / 2)) });
+    // A packaged line (about that many grams) is one pack.
+    else if (item.sellingMethod === 'BY_PACKAGE') list.push({ ...base, quantity: 1 });
+    else if (item.sellingMethod && item.sellingMethod !== 'BY_UNIT') skipped.push({ code: item.code, name: item.name, quantity: item.quantity, unit: 'g', reason: `sold as ${item.sellingMethod} - add in the app` });
+    else list.push({ ...base, quantity: Math.min(MAX_QUANTITY, Math.max(1, Math.round(item.quantity))) });
   });
   return { list, skipped };
 }
@@ -267,6 +280,7 @@ export function createServer(shop: Shop): McpServer {
       title: 'Add products by code',
       description:
         'Add specific products (P_ codes, e.g. from search_products or an ambiguous line\'s candidates) in one request. ' +
+        'Each code is checked to exist and be in stock, in a dry run too. Products sold by weight need weight_kg (in 0.5 kg steps); packs and units take a whole quantity. Repeated codes add up. ' +
         'Products already in the cart are left as they are. When the user picked the product for a list line, set remember_as ' +
         'to that line so it resolves to this product automatically next time.',
       inputSchema: {
@@ -275,6 +289,7 @@ export function createServer(shop: Shop): McpServer {
             z.object({
               code: productCode,
               quantity: quantity.default(1),
+              weight_kg: z.number().positive().max(100).optional().describe('For products sold by weight (BY_WEIGHT): the weight in kg, in the product\'s steps (0.5 kg)'),
               remember_as: z.string().min(1).optional().describe('The list line the user chose this product for, e.g. "חלב 3%"'),
             }),
           )
@@ -286,7 +301,7 @@ export function createServer(shop: Shop): McpServer {
     ({ items, dry_run }) =>
       respond(() =>
         shop.run(async (client, session) => {
-          const list: ListItem[] = items.map((it, i) => ({ line: i + 1, raw: it.code, query: '', productCode: it.code, quantity: it.quantity }));
+          const list: ListItem[] = items.map((it, i) => ({ line: i + 1, raw: it.code, query: '', productCode: it.code, quantity: it.quantity, ...(it.weight_kg ? { weightKg: it.weight_kg } : {}) }));
           const result = fillJson(await fill(client, session, list, dry_run), list.length);
           const remembered = [];
           if (!dry_run) for (const it of items) if (it.remember_as) remembered.push(await remember(client, it.remember_as, it.code));
@@ -334,17 +349,25 @@ export function createServer(shop: Shop): McpServer {
       title: 'Fill cart from a shopping list',
       description:
         'Add a shopping list, one item per line: "חלב 3% x2", "2 x במבה", or a pinned code "P_4131074 x2". ' +
-        'Each line is added only if exactly one in-stock product matches; ambiguous lines come back with candidates for the user to choose from.',
+        'Each line is added only if exactly one in-stock product matches; ambiguous lines come back with candidates for the user to choose from. ' +
+        'Pinned codes are checked to exist and be in stock. A weighed product needs a weight, "בננה 1.5 ק\"ג" or "P_964775 1.5kg", in its 0.5 kg steps; packs take a whole number. Repeated products add up. Quantities are whole numbers from 1 to 30; ' +
+        'a malformed one is reported in skippedLines and counted as invalid. counts covers every line, and complete is true only when all of them went through; ' +
+        'invalid counts malformed list lines, skipped counts lines left out of a past order or saved list (in notAdded), and needsAttention includes both.',
       inputSchema: { list: z.string().min(1).describe('One item per line. Lines starting with # are ignored.'), dry_run: dryRun },
     },
     ({ list, dry_run }) =>
       respond(() =>
         shop.run(async (client, session) => {
           const parsed = parseList(list);
-          if (parsed.items.length === 0) throw new SessionError('The list has no items.');
-          return fillJson(await fill(client, session, parsed.items, dry_run), parsed.items.length, {
-            skippedLines: parsed.errors.map((e) => ({ line: e.line, input: e.raw, reason: e.reason })),
-          });
+          if (parsed.items.length === 0 && parsed.errors.length === 0) throw new SessionError('The list has no items: only blank lines or # comments.');
+          // A list whose every line is malformed still gets a per-line report, and nothing is sent.
+          const result: FillResult = parsed.items.length ? await fill(client, session, parsed.items, dry_run) : { dryRun: dry_run, outcomes: [], stoppedEarly: null };
+          return fillJson(
+            result,
+            parsed.items.length,
+            { skippedLines: parsed.errors.map((e) => ({ line: e.line, input: e.raw, reason: e.reason })) },
+            { invalid: parsed.errors.length },
+          );
         }),
       ),
   );
@@ -353,7 +376,7 @@ export function createServer(shop: Shop): McpServer {
     'set_quantity',
     {
       title: 'Change a quantity',
-      description: 'Set the quantity of a product already in the cart (0 removes it). Only per-unit products; weighed items are changed in the app.',
+      description: 'Set the quantity of a product already in the cart (0 removes it). Units and whole packs; weighed items are changed in the app.',
       inputSchema: { code: productCode, quantity: z.number().int().min(0).max(MAX_QUANTITY) },
       annotations: { destructiveHint: true, idempotentHint: true },
     },
@@ -417,7 +440,7 @@ export function createServer(shop: Shop): McpServer {
           const items = await client.orderItems(found.code);
           const { skipped } = itemsToList(items);
           const skippedCodes = new Set(skipped.map((s) => s.code));
-          return { order: found, items: items.map((i) => ({ ...i, addable: !skippedCodes.has(i.code) })) };
+          return { order: found, items: items.map((i) => ({ ...i, unit: unitOf(i), addable: !skippedCodes.has(i.code) })) };
         }),
       ),
   );
@@ -434,7 +457,7 @@ export function createServer(shop: Shop): McpServer {
         shop.run(async (client, session) => {
           const found = await findOrder(client, order);
           const { list, skipped } = itemsToList(await client.orderItems(found.code));
-          return fillJson(await fill(client, session, list, dry_run), list.length, { source: { order: found }, notAdded: skipped });
+          return fillJson(await fill(client, session, list, dry_run), list.length, { source: { order: found }, notAdded: skipped }, { skipped: skipped.length });
         }),
       ),
   );
@@ -471,7 +494,7 @@ export function createServer(shop: Shop): McpServer {
           const found = await findList(client, list);
           const items = await client.savedListItems(found.id);
           const skippedCodes = new Set(itemsToList(items).skipped.map((s) => s.code));
-          return { list: found, items: items.map((i) => ({ ...i, addable: !skippedCodes.has(i.code) })) };
+          return { list: found, items: items.map((i) => ({ ...i, unit: unitOf(i), addable: !skippedCodes.has(i.code) })) };
         }),
       ),
   );
@@ -488,7 +511,7 @@ export function createServer(shop: Shop): McpServer {
         shop.run(async (client, session) => {
           const found = await findList(client, list);
           const { list: items, skipped } = itemsToList(await client.savedListItems(found.id));
-          return fillJson(await fill(client, session, items, dry_run), items.length, { source: { savedList: found }, notAdded: skipped });
+          return fillJson(await fill(client, session, items, dry_run), items.length, { source: { savedList: found }, notAdded: skipped }, { skipped: skipped.length });
         }),
       ),
   );
