@@ -31,7 +31,7 @@ describe('CookieJar', () => {
   });
 
   it('drops expired cookies', () => {
-    const jar = new CookieJar([c('old', { expires: NOW / 1000 - 10 }), c('live', { expires: NOW / 1000 + 3600 })]);
+    const jar = new CookieJar([c('old', { expires: NOW / 1000 - 10 }), c('live', { expires: NOW / 1000 + 3600 })], NOW);
     expect(jar.header('https://www.shufersal.co.il/', NOW)).toBe('live=live-v');
   });
 

@@ -1,27 +1,6 @@
 import { MAX_QUANTITY } from '../list/parse-list.js';
 import { FormBody, SessionError, type Transport } from './transport.js';
-import {
-  ENDPOINTS,
-  parseCartEntries,
-  parseCartLines,
-  parseCartSummary,
-  type CartLine,
-  type CartSummary,
-  parseOrderItems,
-  parseOrders,
-  parseSavedListItems,
-  parseSavedLists,
-  parseSlots,
-  toCandidate,
-  toSlot,
-  type Candidate,
-  type OrderSummary,
-  type RawSearchResponse,
-  type RawSlot,
-  type SavedListSummary,
-  type Slot,
-  type SourceItem,
-} from './types.js';
+import { ENDPOINTS, parseCartEntries, parseCartLines, parseCartSummary, type CartLine, type CartSummary, parseOrderItems, parseOrders, parseSavedListItems, parseSavedLists, parseSlots, toCandidate, toSlot, type Candidate, type OrderSummary, type RawSearchResponse, type RawSlot, type SavedListSummary, type Slot, type SourceItem, skuOf } from './types.js';
 
 /**
  * Search, read the cart, add to the cart, and choose a delivery window.
@@ -51,6 +30,18 @@ export class ShufersalClient {
   async findBySku(sku: string): Promise<Candidate | null> {
     if (!/^\d{4,14}$/.test(sku)) throw new SessionError(`Not a מקט: ${sku}`);
     return (await this.search(sku, 5)).find((c) => c.sku === sku) ?? null;
+  }
+
+  /**
+   * Exact lookup by product code, including variant codes such as
+   * P_7296073409441_42: searching for the code's מקט returns the product and
+   * its variants, and only the one whose code matches counts.
+   */
+  async findByCode(code: string): Promise<Candidate | null> {
+    const sku = skuOf(code);
+    if (!sku) throw new SessionError(`Not a product code: ${code}`);
+    const wanted = code.toUpperCase();
+    return (await this.search(sku, 20)).find((c) => c.code.toUpperCase() === wanted) ?? null;
   }
 
   /** Every line in the cart with name, quantity, selling method and line price. */

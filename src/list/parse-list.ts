@@ -30,7 +30,12 @@ export const MAX_QUANTITY = 30;
 
 const TRAILING_QTY = /\s*(?:x|×|\*)\s*(\d+)\s*$/i;
 const LEADING_QTY = /^(\d+)\s*(?:x|×|\*)\s+/i;
-const PRODUCT_CODE = /^P_\d+$/i;
+/** A Shufersal product code; variants carry a suffix, e.g. P_7296073409441_42. */
+const PRODUCT_CODE = /^P_\d+(?:_\d+)?$/i;
+/** A multiplier that is present but not a whole number: x1.5, x-2, xabc, 1.5 x ... */
+const BAD_TRAILING_QTY = /\s+(?:x|×|\*)\s*(\S+)\s*$/i;
+const BAD_LEADING_QTY = /^([-+]?[\d.,]+)\s*(?:x|×|\*)\s+/i;
+const NUMBER_LIKE = /^[-+]?[\d.,]+$/;
 /** A line that is only a number (4-14 digits) is a מקט. That is the site's own product number - for some products the package barcode, for many a shorter internal number. */
 const SKU = /^\d{4,14}$/;
 
@@ -56,6 +61,17 @@ export function parseList(text: string): ParsedList {
       quantity = Number.parseInt(match[1]!, 10);
       rest = trailing ? rest.slice(0, trailing.index) : rest.slice(match[0].length);
       rest = rest.trim();
+    } else {
+      // A malformed multiplier must not become part of a fuzzy search. It is
+      // always an error after a pinned code or מקט, and after free text when it
+      // looks like a number (x1.5, x-2); "xabc" after free text may be a name.
+      const badTrailing = BAD_TRAILING_QTY.exec(rest);
+      const before = badTrailing ? rest.slice(0, badTrailing.index).trim() : '';
+      const pinned = PRODUCT_CODE.test(before) || SKU.test(before);
+      if ((badTrailing && (pinned || NUMBER_LIKE.test(badTrailing[1]!))) || BAD_LEADING_QTY.test(rest)) {
+        errors.push({ line, raw, reason: `quantity must be a whole number between 1 and ${MAX_QUANTITY}` });
+        return;
+      }
     }
 
     if (quantity < 1 || quantity > MAX_QUANTITY) {
