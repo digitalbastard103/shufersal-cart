@@ -76,7 +76,9 @@ connect():
 
 1. Read the cart once (product code -> quantity).
 2. For each list line:
-   - pinned `P_` code -> that product
+   - pinned `P_` code (variants such as `P_7296073409441_42` included) -> exact
+     lookup by code (`client.findByCode`), with the same stock and
+     selling-method checks as any other line; an unknown code is `not-found`
    - a bare number (מקט), or a line with a remembered choice
      (`list/choices.ts`, keyed by the line's sorted words) -> exact lookup by
      מקט (`client.findBySku`): only a result whose `sku` equals it counts;
@@ -85,9 +87,15 @@ connect():
      in-stock result contains every word of the line, or exactly one is named
      exactly that; otherwise `ambiguous` with up to 4 candidates.
    - already in the cart -> `already-in-cart` (never doubled)
-   - the same product twice in one list -> `duplicate`
+   - the same product twice in one list -> `merged`: the quantities add up,
+     up to the 30-unit limit (beyond it the later line is an `error`)
    - sold by weight/package -> `by-weight` (not automated)
-3. One bulk add (`cart/addGrid`) for everything resolved.
+   - a malformed multiplier (`x1.5`, `x-2`, `xabc` after a code) is a parse
+     error, never part of a search
+3. One bulk add (`cart/addGrid`) for everything resolved. `counts` and the
+   summary cover every requested line, including lines skipped from an order
+   or saved list and lines that did not parse; `complete` is true only when
+   every line went through.
 4. Each product is confirmed against the cart HTML that request returns;
    anything missing is `unverified`, never reported as added.
 
