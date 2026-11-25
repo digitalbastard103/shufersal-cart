@@ -107,14 +107,33 @@ export class ShufersalClient {
    * "add all to cart". Returns the cart quantities from the returned cart, so
    * each item can be checked individually.
    */
-  async addBulk(items: Array<{ code: string; qty: number }>): Promise<Map<string, number>> {
-    const response = await this.session.request(
-      'POST',
-      ENDPOINTS.cartAddBulk,
-      items.map((i) => ({ productCode: i.code, frontQuantity: i.qty, quantity: i.qty, sellingMethod: 'BY_UNIT', comment: '', longTail: false })),
-    );
-    if (response.status !== 200) throw new SessionError(`cart/addGrid returned HTTP ${response.status}`);
-    return parseCartEntries(response.text);
+  /**
+   * Adds products and returns the cart that results (code -> quantity, kg for
+   * weighed lines). Units and packs go in one bulk request with their selling
+   * method. Weights go one by one through the single add, which is the only
+   * request that accepts them: verified live, the bulk add drops a fractional
+   * weight and reads 1500 as kg, and one bad weighed line fails the whole bulk.
+   */
+  async addBulk(items: Array<{ code: string; qty: number; sellingMethod?: string }>): Promise<Map<string, number>> {
+    const bulk = items.filter((i) => i.sellingMethod !== 'BY_WEIGHT');
+    const weighed = items.filter((i) => i.sellingMethod === 'BY_WEIGHT');
+    let cart: Map<string, number> | null = null;
+    if (bulk.length) {
+      const response = await this.session.request(
+        'POST',
+        ENDPOINTS.cartAddBulk,
+        bulk.map((i) => ({ productCode: i.code, frontQuantity: i.qty, quantity: i.qty, sellingMethod: i.sellingMethod ?? 'BY_UNIT', comment: '', longTail: false })),
+      );
+      if (response.status !== 200) throw new SessionError(`cart/addGrid returned HTTP ${response.status}`);
+      cart = parseCartEntries(response.text);
+    }
+    for (const i of weighed) {
+      const response = await this.session.request('POST', ENDPOINTS.cartAdd, {
+        productCodePost: i.code, productCode: i.code, sellingMethod: 'BY_WEIGHT', qty: i.qty, frontQuantity: i.qty, comment: '', affiliateCode: '',
+      });
+      if (response.status !== 200) throw new SessionError(`cart/add returned HTTP ${response.status} for ${i.code}`);
+    }
+    return weighed.length || !cart ? this.cart() : cart;
   }
 
   async orders(): Promise<OrderSummary[]> {

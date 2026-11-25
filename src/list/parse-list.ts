@@ -17,6 +17,8 @@ export type ListItem = {
   /** A מקט (as shown on the Shufersal product page) given on its own: looked up exactly, never fuzzy-matched. */
   sku?: string;
   quantity: number;
+  /** A weight in kg for a product sold by weight: "בננה 1.5 ק\"ג", "P_964775 1.5kg". */
+  weightKg?: number;
   /** Text after " #" on the line, e.g. the product name next to a pinned code. */
   note?: string;
 };
@@ -29,6 +31,10 @@ export type ParsedList = { items: ListItem[]; errors: ListError[] };
 export const MAX_QUANTITY = 30;
 
 const TRAILING_QTY = /\s*(?:x|×|\*)\s*(\d+)\s*$/i;
+/** A trailing weight: 1.5 ק"ג, 1.5 קג, 2 קילו, 0.5kg. */
+const TRAILING_WEIGHT = /\s+(\d+(?:[.,]\d+)?)\s*(?:ק["״]?ג|קילו|kg)\s*$/i;
+/** The most weight one line may ask for; the site's own ceiling is checked when the product is known. */
+export const MAX_WEIGHT_KG = 100;
 const LEADING_QTY = /^(\d+)\s*(?:x|×|\*)\s+/i;
 /** A Shufersal product code; variants carry a suffix, e.g. P_7296073409441_42. */
 const PRODUCT_CODE = /^P_\d+(?:_\d+)?$/i;
@@ -53,9 +59,20 @@ export function parseList(text: string): ParsedList {
 
     let rest = raw;
     let quantity = 1;
+    let weightKg: number | undefined;
 
-    const trailing = TRAILING_QTY.exec(rest);
-    const leading = trailing ? null : LEADING_QTY.exec(rest);
+    const weight = TRAILING_WEIGHT.exec(rest);
+    if (weight) {
+      weightKg = Number(weight[1]!.replace(',', '.'));
+      if (!(weightKg > 0 && weightKg <= MAX_WEIGHT_KG)) {
+        errors.push({ line, raw, reason: `weight must be above 0 and at most ${MAX_WEIGHT_KG} kg` });
+        return;
+      }
+      rest = rest.slice(0, weight.index).trim();
+    }
+
+    const trailing = weightKg === undefined ? TRAILING_QTY.exec(rest) : null;
+    const leading = trailing || weightKg !== undefined ? null : LEADING_QTY.exec(rest);
     const match = trailing ?? leading;
     if (match) {
       quantity = Number.parseInt(match[1]!, 10);
@@ -84,17 +101,17 @@ export function parseList(text: string): ParsedList {
     }
 
     if (SKU.test(rest)) {
-      items.push({ line, raw, query: '', sku: rest, quantity, ...(note ? { note } : {}) });
+      items.push({ line, raw, query: '', sku: rest, quantity, ...(weightKg ? { weightKg } : {}), ...(note ? { note } : {}) });
       return;
     }
 
     if (PRODUCT_CODE.test(rest)) {
-      items.push({ line, raw, query: '', productCode: rest.toUpperCase(), quantity, ...(note ? { note } : {}) });
+      items.push({ line, raw, query: '', productCode: rest.toUpperCase(), quantity, ...(weightKg ? { weightKg } : {}), ...(note ? { note } : {}) });
       return;
     }
 
     // ':' is the site's query/sort separator ("text:relevance").
-    items.push({ line, raw, query: rest.replace(/:/g, ' ').replace(/\s+/g, ' ').trim(), quantity, ...(note ? { note } : {}) });
+    items.push({ line, raw, query: rest.replace(/:/g, ' ').replace(/\s+/g, ' ').trim(), quantity, ...(weightKg ? { weightKg } : {}), ...(note ? { note } : {}) });
   });
 
   return { items, errors };

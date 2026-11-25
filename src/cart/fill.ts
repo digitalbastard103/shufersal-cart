@@ -1,6 +1,6 @@
 import { decide } from '../list/match.js';
 import type { Choices } from '../list/choices.js';
-import { MAX_QUANTITY, type ListItem } from '../list/parse-list.js';
+import { MAX_QUANTITY, MAX_WEIGHT_KG, type ListItem } from '../list/parse-list.js';
 import type { ShufersalClient } from '../shufersal/client.js';
 import { BlockedError, SessionError } from '../shufersal/transport.js';
 import type { Candidate } from '../shufersal/types.js';
@@ -19,12 +19,16 @@ export type Product = Candidate | { code: string; name?: undefined };
 /** How a line was turned into a product, when it was not a plain search. */
 export type Via = 'code' | 'sku' | 'remembered';
 /** Resolved and waiting for the bulk add (or, in a dry run, what would be added). */
-/** `total` is the quantity sent for this product, summed over duplicate lines; `refused` blocks the whole group. */
-export type Queued = { status: 'would-add'; item: ListItem; product: Product; via?: Via; total: number; refused?: string };
+/**
+ * `total` is the amount sent for this product, summed over duplicate lines:
+ * units or packs, or kg when `sellingMethod` is BY_WEIGHT. `refused` blocks the whole group.
+ */
+export type Queued = { status: 'would-add'; item: ListItem; product: Product; via?: Via; total: number; sellingMethod: SellingMethod; refused?: string };
+export type SellingMethod = 'BY_UNIT' | 'BY_PACKAGE' | 'BY_WEIGHT';
 
 export type Outcome =
   | Queued
-  | { status: 'added'; item: ListItem; product: Product; cartQty: number; total: number; via?: Via }
+  | { status: 'added'; item: ListItem; product: Product; cartQty: number; total: number; sellingMethod: SellingMethod; via?: Via }
   | { status: 'already-in-cart'; item: ListItem; code: string; cartQty: number; name?: string }
   | { status: 'ambiguous' | 'out-of-stock'; item: ListItem; candidates: Candidate[] }
   | { status: 'not-found'; item: ListItem }
@@ -83,13 +87,13 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
 
     if (!options.dryRun && queued.size > 0) {
       options.onBulkAdd?.(queued.size);
-      const after = await client.addBulk([...queued.values()].map((o) => ({ code: o.product.code, qty: o.total })));
+      const after = await client.addBulk([...queued.values()].map((o) => ({ code: o.product.code, qty: o.total, sellingMethod: o.sellingMethod })));
       for (const [code, pending] of queued) {
         const cartQty = after.get(code);
         const done: Outcome =
           cartQty === undefined
             ? { status: 'unverified', item: pending.item, code }
-            : { status: 'added', item: pending.item, product: pending.product, cartQty, total: pending.total, ...(pending.via ? { via: pending.via } : {}) };
+            : { status: 'added', item: pending.item, product: pending.product, cartQty, total: pending.total, sellingMethod: pending.sellingMethod, ...(pending.via ? { via: pending.via } : {}) };
         outcomes[outcomes.indexOf(pending)] = done;
         report(done);
       }
@@ -124,7 +128,6 @@ async function resolve(
     const found = await client.findByCode(item.productCode);
     if (!found) return { status: 'not-found', item };
     if (!found.inStock) return { status: 'out-of-stock', item, candidates: [found] };
-    if (found.sellingMethod && found.sellingMethod !== 'BY_UNIT') return { status: 'by-weight', item, product: found };
     product = found;
     via = 'code';
   } else if (sku) {
@@ -134,7 +137,6 @@ async function resolve(
       return { status: 'error', item, message: `no product with מקט ${sku}${remembered ? ` (remembered for "${remembered.query}" - choose again)` : ''}` };
     }
     if (!found.inStock) return { status: 'out-of-stock', item, candidates: [found] };
-    if (found.sellingMethod && found.sellingMethod !== 'BY_UNIT') return { status: 'by-weight', item, product: found };
     product = found;
   } else {
     const decision = decide(item.query, await client.search(item.query));
@@ -142,13 +144,13 @@ async function resolve(
     if (decision.kind === 'ambiguous' || decision.kind === 'out-of-stock') {
       return { status: decision.kind, item, candidates: decision.candidates };
     }
-    if (decision.pick.sellingMethod && decision.pick.sellingMethod !== 'BY_UNIT') {
-      // Weighed produce: the quantity semantics (units vs. kg) were never
-      // observed in a capture, so it is not automated.
-      return { status: 'by-weight', item, product: decision.pick };
-    }
     product = decision.pick;
   }
+
+  // How much to send, by the product's selling method (verified live: packs go
+  // through the bulk add, weights only through the single add, in kg).
+  const amount = amountFor(item, product);
+  if ('status' in amount) return amount;
 
   // Re-running a list must not double the order.
   const existing = cart.get(product.code);
@@ -159,18 +161,50 @@ async function resolve(
   // The same product on several lines: the quantities add up, like a shopping list.
   const earlier = queued.get(product.code);
   if (earlier) {
-    const total = earlier.total + item.quantity;
-    if (earlier.refused || total > MAX_QUANTITY) {
-      earlier.refused ??= `lines with this product add up to ${total} units, more than ${MAX_QUANTITY}; none of them was added`;
+    if (earlier.sellingMethod !== amount.sellingMethod) {
+      return { status: 'error', item, message: `line ${earlier.item.line} asks for this product by ${earlier.sellingMethod === 'BY_WEIGHT' ? 'weight' : 'unit'}; use one or the other` };
+    }
+    const total = round3(earlier.total + amount.amount);
+    const limit = amount.sellingMethod === 'BY_WEIGHT' ? amount.max : MAX_QUANTITY;
+    if (earlier.refused || total > limit) {
+      earlier.refused ??= `lines with this product add up to ${total} ${amount.sellingMethod === 'BY_WEIGHT' ? 'kg' : 'units'}, more than ${limit}; none of them was added`;
       return { status: 'error', item, message: earlier.refused };
     }
     earlier.total = total;
     return { status: 'merged', item, code: product.code, line: earlier.item.line, total };
   }
 
-  const outcome: Queued = { status: 'would-add', item, product, total: item.quantity, ...(via ? { via } : {}) };
+  const outcome: Queued = { status: 'would-add', item, product, total: amount.amount, sellingMethod: amount.sellingMethod, ...(via ? { via } : {}) };
   queued.set(product.code, outcome);
   return outcome;
+}
+
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/**
+ * The amount to send for a line: whole units for BY_UNIT, whole packs for
+ * BY_PACKAGE, and for BY_WEIGHT the line's weight in kg, which must be a
+ * multiple of the product's step (500 g seen live) and within its ceiling.
+ * A weighed product without a weight is left to the user, as before.
+ */
+function amountFor(item: ListItem, product: Product): { sellingMethod: SellingMethod; amount: number; max: number } | Outcome {
+  const method = 'sellingMethod' in product ? product.sellingMethod : null;
+  const candidate = 'sellingMethod' in product ? (product as Candidate) : null;
+  const weighed = method === 'BY_WEIGHT' || (method === 'CUSTOMER_SELECTION' && item.weightKg !== undefined);
+  if (!weighed) {
+    if (item.weightKg !== undefined) return { status: 'error', item, message: `${product.name ?? product.code} is sold by ${method === 'BY_PACKAGE' ? 'pack' : 'unit'}; give a number of ${method === 'BY_PACKAGE' ? 'packs' : 'units'} (x2), not a weight` };
+    if (!Number.isInteger(item.quantity)) return { status: 'error', item, message: 'quantity must be a whole number' };
+    return { sellingMethod: method === 'BY_PACKAGE' ? 'BY_PACKAGE' : 'BY_UNIT', amount: item.quantity, max: MAX_QUANTITY };
+  }
+  if (item.weightKg === undefined) return { status: 'by-weight', item, product: candidate as Candidate };
+  const step = candidate?.weightStepKg ?? 0.5;
+  const max = Math.min(candidate?.maxWeightKg ?? MAX_WEIGHT_KG, MAX_WEIGHT_KG);
+  const steps = item.weightKg / step;
+  if (Math.abs(steps - Math.round(steps)) > 1e-6 || item.weightKg < step) {
+    return { status: 'error', item, message: `${product.name ?? product.code} is sold in steps of ${step} kg; ask for ${Math.max(step, Math.round(steps) * step)} kg, for example` };
+  }
+  if (item.weightKg > max) return { status: 'error', item, message: `at most ${max} kg of ${product.name ?? product.code}` };
+  return { sellingMethod: 'BY_WEIGHT', amount: round3(item.weightKg), max };
 }
 
 export function label(c: Candidate): string {
@@ -186,7 +220,7 @@ export function describe(o: Outcome): string {
     case 'added':
       return `  ✓ ${head}  ->  ${what(o.product)}  (in cart: ${o.cartQty})${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'would-add':
-      return `  ~ ${head}  ->  ${what(o.product)}  x${o.total}${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
+      return `  ~ ${head}  ->  ${what(o.product)}  ${o.sellingMethod === 'BY_WEIGHT' ? `${o.total} kg` : `x${o.total}`}${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'already-in-cart':
       return `  = ${head}  ->  already in cart (${o.cartQty})  [${o.code}]`;
     case 'ambiguous':
@@ -200,7 +234,7 @@ export function describe(o: Outcome): string {
     case 'not-found':
       return `  ✗ ${head}  ->  nothing found`;
     case 'by-weight':
-      return `  ⚖ ${head}  ->  ${label(o.product)} is sold by weight - add it by hand`;
+      return `  ⚖ ${head}  ->  ${label(o.product)} is sold by weight - give a weight, e.g. 1.5 ק"ג`;
     case 'unverified':
       return `  ! ${head}  ->  add request sent for ${o.code}, but it does not appear in the returned cart - check it`;
     case 'merged':

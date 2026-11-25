@@ -22,6 +22,8 @@ export const ENDPOINTS = {
    * removal, so they must always come from a fresh cart read.
    */
   cartUpdate: '/online/he/cart/update',
+  /** The site's single-product add; the only one that accepts a weight (`qty` in kg with sellingMethod BY_WEIGHT). */
+  cartAdd: '/online/he/cart/add',
   /** -> JSON array of saved addresses; used only as a "signed in?" probe, never printed */
   addressList: '/online/he/checkout/address/list',
   /** -> JSON `{ "YYYYMMDD": RawSlot[] }` for the account's default address. Query copied from the capture. */
@@ -225,6 +227,9 @@ export type RawSearchResult = {
   sellingMethod?: { code?: string | null } | null;
   stock?: { stockLevelStatus?: { code?: string | null } | null } | null;
   price?: { value?: number | null; formattedValue?: string | null } | null;
+  /** Weighed products: the step and ceiling of the weight the site accepts (seen live: 500 grams, 100 kg). */
+  weightIncrement?: number | null;
+  maxOrderWeight?: number | null;
 };
 
 export type RawSearchResponse = {
@@ -239,8 +244,11 @@ export type Candidate = {
   name: string;
   brand: string | null;
   unitDescription: string | null;
-  /** `BY_UNIT` is the only method this tool adds automatically. */
+  /** BY_UNIT and BY_PACKAGE are added in whole units or packs, BY_WEIGHT by a weight in kg. */
   sellingMethod: string | null;
+  /** For weighed products: the weight step and the most that can be ordered, in kg. */
+  weightStepKg?: number | null;
+  maxWeightKg?: number | null;
   inStock: boolean;
   price: number | null;
   priceText: string | null;
@@ -265,6 +273,8 @@ export function toCandidate(raw: RawSearchResult): Candidate | null {
     inStock: stock !== 'outOfStock',
     price: typeof raw.price?.value === 'number' ? raw.price.value : null,
     priceText: raw.price?.formattedValue ?? null,
+    weightStepKg: typeof raw.weightIncrement === 'number' && raw.weightIncrement > 0 ? raw.weightIncrement / 1000 : null,
+    maxWeightKg: typeof raw.maxOrderWeight === 'number' && raw.maxOrderWeight > 0 ? raw.maxOrderWeight : null,
   };
 }
 

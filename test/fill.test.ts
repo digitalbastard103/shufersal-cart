@@ -44,6 +44,8 @@ const run = (client: ShufersalClient, text: string, dryRun = false) =>
 const catalog = [
   product('P_7290110563462', 'חלב נטול לקטוז 2%'),
   product('P_939995', 'פילה סלמון קפוא', { sellingMethod: 'BY_WEIGHT' }),
+  product('P_964775', 'בננה', { sellingMethod: 'BY_WEIGHT', weightStepKg: 0.5, maxWeightKg: 100 }),
+  product('P_7296073440314', 'עגבניה ארוזה', { sellingMethod: 'BY_PACKAGE' }),
   product('P_1111111', 'אזל מהמלאי', { inStock: false }),
   product('P_7296073409441_42', 'וריאנט'),
 ];
@@ -73,7 +75,7 @@ describe('pinned product codes are checked like any other line', () => {
     const { client, bulk } = fakeClient(catalog);
     const result = await run(client, 'P_7296073409441_42 x2');
     expect(result.outcomes[0]).toMatchObject({ status: 'added', cartQty: 2 });
-    expect(bulk).toEqual([[{ code: 'P_7296073409441_42', qty: 2 }]]);
+    expect(bulk).toEqual([[{ code: 'P_7296073409441_42', qty: 2, sellingMethod: 'BY_UNIT' }]]);
   });
 });
 
@@ -83,7 +85,7 @@ describe('duplicate lines', () => {
     const result = await run(client, 'P_7290110563462 x2\nP_7290110563462 x3');
     expect(result.outcomes.map((o) => o.status)).toEqual(['added', 'merged']);
     expect(result.outcomes[1]).toMatchObject({ line: 1, total: 5 });
-    expect(bulk).toEqual([[{ code: 'P_7290110563462', qty: 5 }]]);
+    expect(bulk).toEqual([[{ code: 'P_7290110563462', qty: 5, sellingMethod: 'BY_UNIT' }]]);
   });
 
   it('keep each line\'s own quantity and carry the total on the first', async () => {
@@ -99,7 +101,7 @@ describe('duplicate lines', () => {
     const message = 'lines with this product add up to 40 units, more than 30; none of them was added';
     expect(result.outcomes.map((o) => o.status)).toEqual(['error', 'added', 'error', 'error']);
     expect(result.outcomes[0]).toMatchObject({ message });
-    expect(bulk).toEqual([[{ code: 'P_7296073409441_42', qty: 1 }]]);
+    expect(bulk).toEqual([[{ code: 'P_7296073409441_42', qty: 1, sellingMethod: 'BY_UNIT' }]]);
     expect(counts(result, 4)).toMatchObject({ added: 1, needsAttention: 3, complete: false });
   });
 });
@@ -134,3 +136,36 @@ describe('findByCode', () => {
     expect(await ShufersalClient.prototype.findByCode.call(self, 'P_7296073409441_99')).toBeNull();
   });
 });
+
+describe('weighed and packaged products', () => {
+  it('are added by weight in kg and by whole packs', async () => {
+    const { client, bulk } = fakeClient(catalog);
+    const result = await run(client, 'P_964775 1.5 ק"ג\nP_7296073440314 x2\nP_964775 0.5kg');
+    expect(result.outcomes.map((o) => o.status)).toEqual(['added', 'added', 'merged']);
+    expect(result.outcomes[0]).toMatchObject({ sellingMethod: 'BY_WEIGHT', total: 2 });
+    expect(bulk).toEqual([[{ code: 'P_964775', qty: 2, sellingMethod: 'BY_WEIGHT' }, { code: 'P_7296073440314', qty: 2, sellingMethod: 'BY_PACKAGE' }]]);
+  });
+
+  it('need a weight in the product\'s steps, and a unit product refuses one', async () => {
+    const { client, bulk } = fakeClient(catalog);
+    const result = await run(client, 'P_964775 x2\nP_964775 1.2kg\nP_7290110563462 1 ק"ג', true);
+    expect(result.outcomes.map((o) => o.status)).toEqual(['by-weight', 'error', 'error']);
+    expect(result.outcomes[1]).toMatchObject({ message: 'בננה is sold in steps of 0.5 kg; ask for 1 kg, for example' });
+    expect(result.outcomes[2]).toMatchObject({ message: expect.stringContaining('sold by unit') });
+    expect(bulk).toEqual([]);
+  });
+});
+
+describe('ShufersalClient.addBulk', () => {
+  it('sends units and packs in one bulk request and each weight through the single add', async () => {
+    const calls: Array<[string, unknown]> = [];
+    const session = { request: async (method: string, url: string, body?: unknown) => { calls.push([url, body]); return { status: 200, text: '', contentType: 'text/html' }; } };
+    const client = new ShufersalClient(session as never);
+    client.cart = async () => new Map([['P_1', 1], ['P_964775', 1.5]]);
+    const out = await client.addBulk([{ code: 'P_1', qty: 1, sellingMethod: 'BY_UNIT' }, { code: 'P_964775', qty: 1.5, sellingMethod: 'BY_WEIGHT' }]);
+    expect(calls.map(([url]) => url.split('?')[0])).toEqual(['/online/he/cart/addGrid', '/online/he/cart/add']);
+    expect(calls[1]![1]).toMatchObject({ productCodePost: 'P_964775', sellingMethod: 'BY_WEIGHT', qty: 1.5 });
+    expect(out.get('P_964775')).toBe(1.5);
+  });
+});
+

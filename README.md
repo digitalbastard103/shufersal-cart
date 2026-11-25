@@ -36,8 +36,10 @@ Safety built in, not left to the caller:
   exactly one in-stock product is added automatically.
 - **Re-running never doubles the cart:** products already in it are left alone.
 - **Every change is verified** against the cart the site returns.
-- **Items sold by weight** are reported, not added (their quantity semantics
-  were never captured, so they are not automated).
+- **Items sold by weight** are added by a weight in kg (`בננה 1.5 ק"ג` in a list,
+  `weight_kg` in `add_to_cart`), in the product's steps (0.5 kg). A weighed line
+  without a weight is reported, not guessed. Packaged produce is added in whole
+  packs.
 - **A refused request (403/429/challenge) stops the run.** It is never
   retried, and neither is a failed login.
 

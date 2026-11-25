@@ -91,10 +91,17 @@ connect():
      and the first line reports the sum as `totalQuantity`; each line keeps
      its own quantity. If the sum exceeds the 30-unit limit, every line of
      that product is an `error` and none of it is added.
-   - sold by weight/package -> `by-weight` (not automated)
+   - sold by weight (`BY_WEIGHT`) -> needs a weight in kg in the product's
+     `weightIncrement` steps (500 g seen live) up to `maxOrderWeight`; without
+     one the line is `by-weight`. Packaged produce (`BY_PACKAGE`) takes whole
+     packs, and a unit product refuses a weight.
    - a malformed multiplier (`x1.5`, `x-2`, `xabc` after a code) is a parse
      error, never part of a search
-3. One bulk add (`cart/addGrid`) for everything resolved. `counts` and the
+3. One bulk add (`cart/addGrid`) for units and packs, each with its selling
+   method, then one `cart/add` per weighed product (`sellingMethod: BY_WEIGHT`,
+   `qty` in kg). Verified live: `addGrid` drops a fractional weight, reads 1500
+   as kg (capped at 100), and one bad weighed line fails the whole bulk, so
+   weights never go through it. `counts` and the
    summary cover every requested line, including lines skipped from an order
    or saved list and lines that did not parse; `complete` is true only when
    every line went through.

@@ -74,5 +74,11 @@ describe('parseList', () => {
   it('recognises variant product codes', () => {
     expect(parseList('P_7296073409441_42 x2').items).toMatchObject([{ productCode: 'P_7296073409441_42', quantity: 2 }]);
   });
+
+  it('reads a weight in kg', () => {
+    const { items, errors } = parseList('בננה 1.5 ק"ג\nP_964775 2kg\nתפוחים 1,5 קילו\nבננה 0 ק"ג');
+    expect(items.map((i) => [i.productCode ?? i.query, i.weightKg])).toEqual([['בננה', 1.5], ['P_964775', 2], ['תפוחים', 1.5]]);
+    expect(errors.map((e) => e.line)).toEqual([4]);
+  });
 });
 
