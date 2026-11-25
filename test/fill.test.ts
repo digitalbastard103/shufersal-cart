@@ -115,6 +115,10 @@ describe('counts and summary cover every requested line', () => {
     expect(counts(result, 3).complete).toBe(false);
   });
 
+  it('report a list whose every line is malformed as incomplete, not empty', () => {
+    expect(counts({ dryRun: true, outcomes: [], stoppedEarly: null }, 0, { invalid: 1 })).toMatchObject({ requestedLines: 1, wouldAdd: 0, needsAttention: 1, invalid: 1, complete: false });
+  });
+
   it('are complete only when every line went through', async () => {
     const { client } = fakeClient(catalog);
     const result = await run(client, 'P_7290110563462 x2');

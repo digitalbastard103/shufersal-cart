@@ -351,9 +351,11 @@ export function createServer(shop: Shop): McpServer {
       respond(() =>
         shop.run(async (client, session) => {
           const parsed = parseList(list);
-          if (parsed.items.length === 0) throw new SessionError('The list has no items.');
+          if (parsed.items.length === 0 && parsed.errors.length === 0) throw new SessionError('The list has no items: only blank lines or # comments.');
+          // A list whose every line is malformed still gets a per-line report, and nothing is sent.
+          const result: FillResult = parsed.items.length ? await fill(client, session, parsed.items, dry_run) : { dryRun: dry_run, outcomes: [], stoppedEarly: null };
           return fillJson(
-            await fill(client, session, parsed.items, dry_run),
+            result,
             parsed.items.length,
             { skippedLines: parsed.errors.map((e) => ({ line: e.line, input: e.raw, reason: e.reason })) },
             { invalid: parsed.errors.length },
