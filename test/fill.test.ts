@@ -86,10 +86,21 @@ describe('duplicate lines', () => {
     expect(bulk).toEqual([[{ code: 'P_7290110563462', qty: 5 }]]);
   });
 
-  it('are an error when the total exceeds the limit', async () => {
+  it('keep each line\'s own quantity and carry the total on the first', async () => {
     const { client } = fakeClient(catalog);
-    const result = await run(client, 'P_7290110563462 x20\nP_7290110563462 x20', true);
-    expect(result.outcomes[1]).toMatchObject({ status: 'error', message: 'together with line 1 this is 40 units, more than 30' });
+    const result = await run(client, '2 x P_7290110563462\nP_7290110563462 ×2', true);
+    expect(result.outcomes[0]).toMatchObject({ status: 'would-add', item: { quantity: 2 }, total: 4 });
+    expect(result.outcomes[1]).toMatchObject({ status: 'merged', item: { quantity: 2 }, total: 4 });
+  });
+
+  it('over the limit refuse the whole group, so none of it is added', async () => {
+    const { client, bulk } = fakeClient(catalog);
+    const result = await run(client, 'P_7290110563462 x20\nP_7296073409441_42\nP_7290110563462 x20\nP_7290110563462 x1');
+    const message = 'lines with this product add up to 40 units, more than 30; none of them was added';
+    expect(result.outcomes.map((o) => o.status)).toEqual(['error', 'added', 'error', 'error']);
+    expect(result.outcomes[0]).toMatchObject({ message });
+    expect(bulk).toEqual([[{ code: 'P_7296073409441_42', qty: 1 }]]);
+    expect(counts(result, 4)).toMatchObject({ added: 1, needsAttention: 3, complete: false });
   });
 });
 

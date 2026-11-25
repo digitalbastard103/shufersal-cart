@@ -119,6 +119,7 @@ function outcomeJson(o: Outcome) {
         ...base,
         code: o.product.code,
         name: o.product.name ?? o.item.note,
+        ...(o.total !== o.item.quantity ? { totalQuantity: o.total } : {}),
         ...(o.status === 'added' ? { cartQuantity: o.cartQty } : {}),
         ...(o.via === 'remembered' ? { resolvedBy: "the user's earlier choice for this line" } : o.via === 'sku' ? { resolvedBy: 'exact מקט' } : {}),
       };
@@ -152,12 +153,17 @@ function fillJson(result: FillResult, total: number, extra: Record<string, unkno
 }
 
 /** Past order / saved list items -> pinned list items; the rest is reported, not added. */
+/** Order and saved-list quantities are units for BY_UNIT products and grams for weighed or packaged ones (bananas: 1000). */
+function unitOf(item: SourceItem): 'unit' | 'g' {
+  return item.sellingMethod && item.sellingMethod !== 'BY_UNIT' ? 'g' : 'unit';
+}
+
 function itemsToList(items: SourceItem[]) {
   const list: ListItem[] = [];
-  const skipped: Array<{ code: string; name: string; reason: string }> = [];
+  const skipped: Array<{ code: string; name: string; quantity: number; unit: 'unit' | 'g'; reason: string }> = [];
   items.forEach((item, i) => {
-    if (item.sellingMethod && item.sellingMethod !== 'BY_UNIT') skipped.push({ code: item.code, name: item.name, reason: 'sold by weight/package - add in the app' });
-    else if (item.outOfStock) skipped.push({ code: item.code, name: item.name, reason: 'out of stock' });
+    if (item.sellingMethod && item.sellingMethod !== 'BY_UNIT') skipped.push({ code: item.code, name: item.name, quantity: item.quantity, unit: 'g', reason: `sold by weight/package (${item.quantity / 1000} kg last time) - add in the app` });
+    else if (item.outOfStock) skipped.push({ code: item.code, name: item.name, quantity: item.quantity, unit: unitOf(item), reason: 'out of stock' });
     else list.push({ line: i + 1, raw: item.code, query: '', productCode: item.code, quantity: Math.min(MAX_QUANTITY, Math.max(1, Math.round(item.quantity))), note: item.name });
   });
   return { list, skipped };
@@ -424,7 +430,7 @@ export function createServer(shop: Shop): McpServer {
           const items = await client.orderItems(found.code);
           const { skipped } = itemsToList(items);
           const skippedCodes = new Set(skipped.map((s) => s.code));
-          return { order: found, items: items.map((i) => ({ ...i, addable: !skippedCodes.has(i.code) })) };
+          return { order: found, items: items.map((i) => ({ ...i, unit: unitOf(i), addable: !skippedCodes.has(i.code) })) };
         }),
       ),
   );
@@ -478,7 +484,7 @@ export function createServer(shop: Shop): McpServer {
           const found = await findList(client, list);
           const items = await client.savedListItems(found.id);
           const skippedCodes = new Set(itemsToList(items).skipped.map((s) => s.code));
-          return { list: found, items: items.map((i) => ({ ...i, addable: !skippedCodes.has(i.code) })) };
+          return { list: found, items: items.map((i) => ({ ...i, unit: unitOf(i), addable: !skippedCodes.has(i.code) })) };
         }),
       ),
   );

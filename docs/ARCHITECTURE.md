@@ -88,7 +88,9 @@ connect():
      exactly that; otherwise `ambiguous` with up to 4 candidates.
    - already in the cart -> `already-in-cart` (never doubled)
    - the same product twice in one list -> `merged`: the quantities add up,
-     up to the 30-unit limit (beyond it the later line is an `error`)
+     and the first line reports the sum as `totalQuantity`; each line keeps
+     its own quantity. If the sum exceeds the 30-unit limit, every line of
+     that product is an `error` and none of it is added.
    - sold by weight/package -> `by-weight` (not automated)
    - a malformed multiplier (`x1.5`, `x-2`, `xabc` after a code) is a parse
      error, never part of a search
@@ -128,3 +130,8 @@ connect():
 4. Add a `client.ts` method that enforces the operation's invariants.
 5. Expose it in `cli/` and/or `mcp/server.ts`.
 6. Verify once against a real account, read-only or reversible first.
+
+Order and saved-list quantities are units for `BY_UNIT` products and grams for
+weighed or packaged ones (bananas come back as `1000`). `get_order` and
+`get_saved_list` say which with `unit: "unit" | "g"`, and lines skipped from a
+reorder carry their quantity and unit.

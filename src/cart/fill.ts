@@ -19,11 +19,12 @@ export type Product = Candidate | { code: string; name?: undefined };
 /** How a line was turned into a product, when it was not a plain search. */
 export type Via = 'code' | 'sku' | 'remembered';
 /** Resolved and waiting for the bulk add (or, in a dry run, what would be added). */
-export type Queued = { status: 'would-add'; item: ListItem; product: Product; via?: Via };
+/** `total` is the quantity sent for this product, summed over duplicate lines; `refused` blocks the whole group. */
+export type Queued = { status: 'would-add'; item: ListItem; product: Product; via?: Via; total: number; refused?: string };
 
 export type Outcome =
   | Queued
-  | { status: 'added'; item: ListItem; product: Product; cartQty: number; via?: Via }
+  | { status: 'added'; item: ListItem; product: Product; cartQty: number; total: number; via?: Via }
   | { status: 'already-in-cart'; item: ListItem; code: string; cartQty: number; name?: string }
   | { status: 'ambiguous' | 'out-of-stock'; item: ListItem; candidates: Candidate[] }
   | { status: 'not-found'; item: ListItem }
@@ -73,15 +74,22 @@ export async function fillCart(client: ShufersalClient, items: ListItem[], optio
       await options.pause(options.delayMs);
     }
 
+    // A product whose lines together exceed the limit is not added at all.
+    for (const [code, pending] of queued) {
+      if (!pending.refused) continue;
+      outcomes[outcomes.indexOf(pending)] = { status: 'error', item: pending.item, message: pending.refused };
+      queued.delete(code);
+    }
+
     if (!options.dryRun && queued.size > 0) {
       options.onBulkAdd?.(queued.size);
-      const after = await client.addBulk([...queued.values()].map((o) => ({ code: o.product.code, qty: o.item.quantity })));
+      const after = await client.addBulk([...queued.values()].map((o) => ({ code: o.product.code, qty: o.total })));
       for (const [code, pending] of queued) {
         const cartQty = after.get(code);
         const done: Outcome =
           cartQty === undefined
             ? { status: 'unverified', item: pending.item, code }
-            : { status: 'added', item: pending.item, product: pending.product, cartQty, ...(pending.via ? { via: pending.via } : {}) };
+            : { status: 'added', item: pending.item, product: pending.product, cartQty, total: pending.total, ...(pending.via ? { via: pending.via } : {}) };
         outcomes[outcomes.indexOf(pending)] = done;
         report(done);
       }
@@ -151,15 +159,16 @@ async function resolve(
   // The same product on several lines: the quantities add up, like a shopping list.
   const earlier = queued.get(product.code);
   if (earlier) {
-    const total = earlier.item.quantity + item.quantity;
-    if (total > MAX_QUANTITY) {
-      return { status: 'error', item, message: `together with line ${earlier.item.line} this is ${total} units, more than ${MAX_QUANTITY}` };
+    const total = earlier.total + item.quantity;
+    if (earlier.refused || total > MAX_QUANTITY) {
+      earlier.refused ??= `lines with this product add up to ${total} units, more than ${MAX_QUANTITY}; none of them was added`;
+      return { status: 'error', item, message: earlier.refused };
     }
-    earlier.item = { ...earlier.item, quantity: total };
+    earlier.total = total;
     return { status: 'merged', item, code: product.code, line: earlier.item.line, total };
   }
 
-  const outcome: Queued = { status: 'would-add', item, product, ...(via ? { via } : {}) };
+  const outcome: Queued = { status: 'would-add', item, product, total: item.quantity, ...(via ? { via } : {}) };
   queued.set(product.code, outcome);
   return outcome;
 }
@@ -177,7 +186,7 @@ export function describe(o: Outcome): string {
     case 'added':
       return `  ✓ ${head}  ->  ${what(o.product)}  (in cart: ${o.cartQty})${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'would-add':
-      return `  ~ ${head}  ->  ${what(o.product)}  x${o.item.quantity}${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
+      return `  ~ ${head}  ->  ${what(o.product)}  x${o.total}${o.via === 'remembered' ? '  [your earlier choice]' : ''}`;
     case 'already-in-cart':
       return `  = ${head}  ->  already in cart (${o.cartQty})  [${o.code}]`;
     case 'ambiguous':
