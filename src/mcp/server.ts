@@ -376,7 +376,7 @@ export function createServer(shop: Shop): McpServer {
     'set_quantity',
     {
       title: 'Change a quantity',
-      description: 'Set the quantity of a product already in the cart (0 removes it). Only per-unit products; weighed items are changed in the app.',
+      description: 'Set the quantity of a product already in the cart (0 removes it). Units and whole packs; weighed items are changed in the app.',
       inputSchema: { code: productCode, quantity: z.number().int().min(0).max(MAX_QUANTITY) },
       annotations: { destructiveHint: true, idempotentHint: true },
     },

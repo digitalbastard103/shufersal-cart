@@ -70,7 +70,10 @@ export class ShufersalClient {
     const line = (await this.cartLines()).find((l) => l.code === code);
     if (!line) throw new SessionError(`${code} is not in the cart.`);
     const remove = qty === 0;
-    if (!remove && line.sellingMethod !== 'BY_UNIT') {
+    // A pack line counts whole packs (verified live: cart/update with BY_PACKAGE took tomatoes from 1 to 2 packs);
+    // a line holding grams is a weighed pack whose amount is changed in the app.
+    const countsPacks = line.sellingMethod === 'BY_PACKAGE' && Number.isInteger(line.quantity) && line.quantity <= MAX_QUANTITY;
+    if (!remove && line.sellingMethod !== 'BY_UNIT' && !countsPacks) {
       throw new SessionError(`${line.name} is sold ${line.sellingMethod ?? 'by weight'} - change its amount in the app; only removing it is supported here.`);
     }
 
@@ -78,7 +81,7 @@ export class ShufersalClient {
     const query = new URLSearchParams();
     query.set('entryNumber', String(line.entryNumber));
     query.set('qty', String(qty));
-    query.set('sellingMethod', remove ? '' : 'BY_UNIT');
+    query.set('sellingMethod', remove ? '' : countsPacks ? 'BY_PACKAGE' : 'BY_UNIT');
     if (!remove) query.set('comment', '');
     query.set('cartContext[openFrom]', 'CART');
     query.set('cartContext[recommendationType]', 'REGULAR');
