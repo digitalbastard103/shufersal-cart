@@ -24,8 +24,8 @@ export type StoredCookie = {
 export class CookieJar {
   private readonly cookies = new Map<string, StoredCookie>();
 
-  constructor(initial: StoredCookie[] = []) {
-    for (const c of initial) this.set(c);
+  constructor(initial: StoredCookie[] = [], now = Date.now()) {
+    for (const c of initial) this.set(c, now);
   }
 
   static load(file: string): CookieJar | null {
@@ -64,13 +64,13 @@ export class CookieJar {
   absorb(url: string, setCookieHeaders: string[], now = Date.now()): void {
     for (const line of setCookieHeaders) {
       const parsed = parseSetCookie(line, new URL(url).hostname, now);
-      if (parsed) this.set(parsed);
+      if (parsed) this.set(parsed, now);
     }
   }
 
-  private set(cookie: StoredCookie): void {
+  private set(cookie: StoredCookie, now = Date.now()): void {
     const key = `${cookie.name}|${cookie.domain.replace(/^\./, '')}|${cookie.path}`;
-    if (cookie.expires !== -1 && cookie.expires * 1000 <= Date.now()) this.cookies.delete(key);
+    if (cookie.expires !== -1 && cookie.expires * 1000 <= now) this.cookies.delete(key);
     else this.cookies.set(key, cookie);
   }
 }
